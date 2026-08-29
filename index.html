@@ -1,0 +1,1431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drainage — tap a point, see its catchment</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<style>
+  /* text sizes in rem so browser/OS text-size preferences apply; .big is the in-app bump.
+     The 0.875rem goes on body ONLY — on html it would redefine rem itself and compound. */
+  html, body { margin: 0; height: 100%; }
+  body { font: 0.875rem/1.45 system-ui, sans-serif; }
+  html.big { font-size: 125%; }
+  button, input, select { font: inherit; }
+  :root { --panelw: 360px; --maph: 55%; }
+  #map { position: absolute; inset: 0; right: var(--panelw); cursor: crosshair; }
+  #panel { position: absolute; top: 0; right: 0; bottom: 0; width: var(--panelw); box-sizing: border-box;  overflow-y: auto; padding: 12px 16px; background: #fff; border-left: 1px solid #ccc; }
+  #divider { position: absolute; top: 0; bottom: 0; right: var(--panelw); width: 10px; margin-right: -5px;    cursor: col-resize; z-index: 3; touch-action: none; }
+  #divider:hover, #divider.dragging { background: #4a90d966; }
+  @media (max-width: 700px) {
+    #map { inset: 0 0 calc(100% - var(--maph)) 0; right: 0; }
+    #panel { top: var(--maph); left: 0; width: auto; border-left: none; border-top: 1px solid #ccc; }
+    #divider { top: var(--maph); bottom: auto; left: 0; right: 0; width: auto; height: 24px;      margin: -12px 0 0 0; cursor: row-resize; }
+  }
+  h1 { font-size: 1rem; margin: 0 0 8px; }
+  h2 { font-size: 0.8125rem; margin: 14px 0 4px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+  #status { padding: 6px 8px; background: #eef; border-radius: 4px; min-height: 1.4em; }
+  #status.err { background: #fdd; color: #900; font-weight: 600; }
+  #status.busy::after { content: '…'; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .2; } }
+  .warn { color: #b00; font-weight: 600; }
+  .note { color: #666; font-size: 0.75rem; }
+  button { margin: 2px 4px 2px 0; }
+  ul { margin: 4px 0; padding-left: 18px; }
+  .alert-item { border-left: 3px solid #c60; padding-left: 8px; margin: 6px 0; }
+  .alert-item.sev-Extreme, .alert-item.sev-Severe { border-color: #d00; }
+  #pins { list-style: none; padding-left: 0; }
+  #pins-msg { display: block; margin-top: 4px; }
+  .ico { width: 13px; height: 13px; fill: currentColor; vertical-align: -2px; }
+  #pins-del:enabled { color: #900; }   /* destructive, and there is no undo */
+  .pin-del { color: #900; cursor: pointer; border: none; background: none; }
+  .pin-ren { color: #555; cursor: pointer; border: none; background: none; }
+  #disclaimer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.75rem; color: #666; }
+  #basemaps { position: absolute; top: 10px; left: 10px; z-index: 2; background: #fffe;     padding: 6px 10px; border-radius: 4px; font-size: 0.75rem; box-shadow: 0 1px 4px #0003; }
+  #basemaps label { display: block; cursor: pointer; }
+  #legend { font-size: 0.75rem; color: #666; margin-top: 4px; }
+  .dot { font-size: 0.875rem; }
+  #pin-name { width: 240px; margin: 4px 0 2px; }
+  /* mi ⇄ km switch */
+  #chk-metric, #chk-big { appearance: none; width: 30px; height: 16px; border-radius: 8px; background: #bbb;       position: relative; cursor: pointer; vertical-align: text-bottom; margin: 0 5px; }
+  #chk-metric:checked, #chk-big:checked { background: #1a5fd0; }
+  #chk-metric::after, #chk-big::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;              border-radius: 50%; background: #fff; transition: left .15s; }
+  #chk-metric:checked::after, #chk-big:checked::after { left: 16px; }
+
+  .fb-thumb[aria-pressed="true"] { outline: 2px solid #1a5fd0; }
+  #fb-comment, #pin-name { width: 100%; box-sizing: border-box; margin: 4px 0; }
+  #about { margin-top: 12px; }
+  #about > summary { cursor: pointer; font-weight: 600; }
+  #about ul { margin: 4px 0 12px; padding-left: 16px; }
+  #about p { margin: 6px 0; }
+  #about strong { display: block; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="divider" title="Drag to resize"></div>
+<div id="basemaps"></div>
+<div id="panel">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+    <h1 style="display:flex;align-items:center;gap:0.4em;min-width:0"><svg viewBox="0 0 128 128" width="1.3em" height="1.3em" style="flex:none" fill="none" stroke="#111" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M40 6 C34 23 22 33 22 44 C22 54 30 62 40 62 C50 62 58 54 58 44 C58 33 46 23 40 6 Z"/><path d="M98 34 C95 43 88 48 88 54 C88 60 93 64 98 64 C104 64 108 60 108 54 C108 48 102 43 98 34 Z"/><path d="M66 76 C61 90 52 98 52 106 C52 114 58 120 66 120 C74 120 80 114 80 106 C80 98 71 90 66 76 Z"/></svg><span id="title" style="overflow-wrap:anywhere">Drainage</span></h1>
+    <span style="display:flex;gap:12px;align-items:baseline;flex:none">
+      <label class="note" style="white-space:nowrap;cursor:pointer" title="Larger text everywhere"><span style="font-size:0.8em">A</span><input type="checkbox" id="chk-big"><span style="font-size:1.2em">A</span></label>
+      <label class="note" style="white-space:nowrap;cursor:pointer" title="Switch between miles/°F/inches and km/°C/mm">mi<input type="checkbox" id="chk-metric">km</label>
+    </span>
+  </div>
+  <div class="note" style="margin:-6px 0 8px">Canyoneer's second best friend</div>
+  <div id="status">Tap a point on the map to see everything that drains to it.</div>
+  <div id="legend"><span class="dot" style="color:#666">●</span> your tap ·
+    <span class="dot" style="color:#e08000">●</span> nearest stream ·
+    <span class="dot" style="color:#8b2fd0">●</span> forecast spots</div>
+  <h2>Drainage area</h2>
+  <div id="basin-info" class="note">Nothing delineated yet.</div>
+  <div><input id="pin-name" placeholder="name this spot (goes in the share link)" maxlength="60" disabled></div>
+  <div>
+    <button id="btn-geojson" disabled title="Download GeoJSON">GeoJSON</button>
+    <button id="btn-kml" disabled title="Download KML">KML</button>
+    <button id="btn-share" disabled title="Copy share link" aria-label="Copy share link"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg></button>
+    <button id="btn-pin" disabled title="Save pin" aria-label="Save pin">📌</button>
+    <button id="btn-clear" disabled title="Clear the pour point and start over" aria-label="Clear">✕</button>
+  </div>
+  <h2>Rain over this drainage — next 48 h</h2>
+  <div id="forecast" class="note">Delineate a drainage to get its forecast.</div>
+  <h2>Active alerts touching this drainage</h2>
+  <div id="alerts" class="note">Delineate a drainage to check alerts.</div>
+  <div id="alerts-link" class="note"></div>
+  <h2>Saved pins</h2>
+  <ul id="pins"></ul>
+  <div id="pins-ctl" hidden>
+    <button id="pins-all">Select all</button>
+    <button id="pins-share" disabled title="Copy one link that opens all the selected pins">Share</button>
+    <button id="pins-del" disabled title="Delete the selected pins">Delete</button>
+    <span class="note" id="pins-msg"></span>
+  </div>
+  <h2>Feedback</h2>
+  <div id="feedback">
+    <div id="fb-ask">Was this useful?
+      <button class="fb-thumb" id="fb-up" aria-label="Yes, useful" aria-pressed="false">👍</button>
+      <button class="fb-thumb" id="fb-down" aria-label="No, not useful" aria-pressed="false">👎</button>
+    </div>
+    <form id="fb-more" hidden>
+      <div class="note">Add a note if you like, then press Send.</div>
+      <!-- honeypot: hidden from people, filled in by naive bots -->
+      <input type="checkbox" name="botcheck" id="fb-botcheck" tabindex="-1" autocomplete="off" style="display:none">
+      <textarea id="fb-comment" rows="3" maxlength="2000"
+        placeholder="Optional — what looked wrong, or what would help?"></textarea>
+      <!-- hidden entirely when nothing is delineated: an offer to attach a spot that does  not exist is just noise, and a ticked box that attaches nothing reads as a lie -->
+      <div id="fb-loc-box">
+        <label style="display:block;cursor:pointer"><input type="checkbox" id="fb-loc" checked> Include the spot I'm looking at</label>
+        <div class="note" id="fb-loc-val"></div>
+        <div class="note">Lets me reproduce what you saw. Left unticked, your note says nothing about where you were.</div>
+      </div>
+      <button type="submit">Send</button> <span class="note" id="fb-status"></span>
+    </form>
+  </div>
+  <div id="disclaimer">
+    <ul style="margin:0;padding-left:16px">
+      <li id="no-alerts-note"><strong>“No active alerts” does not mean safe.</strong>
+      Antelope Canyon 1997 had no warning at the slot.</li>
+      <li>Verify against a topo map before trusting any shaded area.</li>
+    </ul>
+    <details id="about">
+      <summary>About this app</summary>
+
+      <strong>How it works</strong>
+      <ul>
+
+      <li>Tap the map. The point snaps to the nearest mapped stream, and USGS returns the upslope area that drains to it — from <a href="https://streamstats.usgs.gov" target="_blank" rel="noopener">StreamStats</a> where it can, falling back to <a href="https://waterdata.usgs.gov/blog/nldi-intro" target="_blank" rel="noopener">NLDI</a> where it can't.</li>
+      <li>When the NLDI fallback is used, the drainage is delineated from the next downstream confluence instead of the stream point closest to you. This can dramatically inflate the drainage area, because it includes ground below you, not just above.</li>
+      <li>The rain chart covers the next 48 hours, hour by hour. Each hour shows the wettest forecast among several spots spread across the basin (NWS data), in the basin's own timezone.</li>
+      <li>Active <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener">NWS</a> alerts are checked against the basin's actual shape — including zone-based alerts that carry no geometry of their own (most Flood Watches).</li>
+      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device.</li>
+      <li>Tick saved pins to share or delete several at once. A multi-pin link (`#pins:lat,lon,name;…`) asks the recipient before adding them to their saved pins, skips any they already have, and delineates the first either way.</li>
+      <li>Export the basin as GeoJSON or KML for GaiaGPS, CalTopo, or Google Earth.</li>
+      </ul>
+
+      <strong>Privacy</strong>
+      <ul>
+        <li>Your tap coordinates go to USGS, and points inside the drainage go to NWS. That is how the drainage and the forecast get calculated. <b>None of it comes to me.</b></li>
+        <li>I don't collect anything personal &ndash; not your location, and not which canyon you're looking at. The exceptions: which US state a drainage is in, and the domain name of the page that linked to or embedded the app.</li>
+        <li>Share links put the coordinates after a <code>#</code>, which browsers never send to any server.</li>
+        <li>Basic anonymized usage counting is on by default and can be switched off below. It records that a lookup, export, share or pin happened, when, the domain name of the referring page (never its path), and, for a lookup only, which US state. Nothing else, and never a coordinate.</li>
+        <li>Counting uses <a href="https://www.goatcounter.com/help/privacy" target="_blank" rel="noopener">GoatCounter</a>, which is cookieless. As with any web request it receives an IP address and browser string; it hashes both with a salt that rotates every 8 hours, keeps them in memory only, and never shows them to me.</li>
+        <li>Feedback is sent only using <a href="https://web3forms.com/privacy" target="_blank" rel="noopener">Web3Forms</a> when you type a note and press Send. It carries your rating, your text, and the drainage you were looking at (only if you leave that box ticked); the exact values are shown to you before you send.</li>
+      </ul>
+      <p><label style="cursor:pointer"><input type="checkbox" id="chk-count"> Enable analytics</label>
+      <span id="count-state"></span></p>
+      <p>Open source, MIT licensed &mdash;
+        <a href="https://github.com/mislavkos/drainage" target="_blank" rel="noopener">github.com/mislavkos/drainage</a></p>
+    </details>
+  </div>
+</div>
+<script src="vendor/maplibre-gl.js"></script>
+<script src="vendor/turf.min.js"></script>
+<script>
+'use strict';
+const NLDI = 'https://api.water.usgs.gov/nldi';
+const SS = 'https://streamstats.usgs.gov';
+const SS_GIS = 'https://gis.streamstats.usgs.gov/arcgis/rest/services/stateServices';
+const NWS = 'https://api.weather.gov';
+const $ = id => document.getElementById(id);
+
+// ---------- small utils ----------
+// github.io project pages share ONE localStorage origin across all of this account's
+// repos — namespace every key so another project's 'pins' or 'units' can't collide
+const LS = 'drainage:';
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(LS + k)); } catch { return null; } }
+function lsSet(k, v) {
+  const s = JSON.stringify(v);
+  try { localStorage.setItem(LS + k, s); }
+  catch {
+    // quota full — evict the bulky basin caches so precious small writes (pins, units,
+    // basemap choice) still land; caches rebuild themselves on demand
+    try {
+      for (const key of Object.keys(localStorage))
+        if (key.startsWith(LS + 'basin:') || key.startsWith(LS + 'ssbasin:')) localStorage.removeItem(key);
+      localStorage.setItem(LS + k, s);
+    } catch {}
+  }
+}
+async function fetchRetry(url, opts, tries = 3) {
+  let delay = 1000;
+  for (let i = 1; ; i++) {
+    try {
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      if (i >= tries) throw new Error(`${e.message} (${url.slice(0, 80)})`);
+      await new Promise(res => setTimeout(res, delay));
+      delay *= 2;
+    }
+  }
+}
+
+function setStatus(msg, cls) { const s = $('status'); s.textContent = msg; s.className = cls || ''; }
+// ---------- units ----------
+let units = lsGet('units') || 'us';
+const isUS = () => units === 'us';
+const fmtTemp = f => Math.round(isUS() ? f : (f - 32) * 5 / 9) + '°';   // temps held in °F internally
+const fmtRain = inch => { if (isUS()) return inch.toFixed(2) + ' in';                 const mm = inch * 25.4; return mm.toFixed(mm < 1 ? 2 : 1) + ' mm'; }; // rain held in inches
+// numeric twin of fmtRain's precision — chart heights snap to it, so two hours that
+// display the same amount never draw different heights
+const roundRain = inch => { if (isUS()) return +inch.toFixed(2);                   const mm = inch * 25.4; return +mm.toFixed(mm < 1 ? 2 : 1) / 25.4; };
+const fmtArea = km2 => { const v = isUS() ? km2 * 0.386102 : km2;                return v.toFixed(v < 10 ? 2 : 1) + (isUS() ? ' mi²' : ' km²'); };
+const fmtDist = m => isUS()
+  ? (m < 305 ? Math.round(m * 3.28084) + ' ft' : (m / 1609.34).toFixed(m < 1609 ? 2 : 1) + ' mi')
+  : (m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km');
+function compass(bearing) {
+  return ['N','NE','E','SE','S','SW','W','NW'][Math.round(((bearing + 360) % 360) / 45) % 8];
+}
+function downloadBlob(name, type, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ---------- map ----------
+// All keyless. Note ArcGIS tile order is {z}/{y}/{x} — row before column.
+const BASEMAPS = {
+  'USGS Topo': { maxzoom: 16, attribution: 'USGS The National Map',
+    tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'] },
+  'USGS Imagery': { maxzoom: 16, attribution: 'USGS The National Map',
+    tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}'] },
+  'OpenTopoMap': { maxzoom: 17, attribution: '© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)',
+    tiles: ['https://a.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://b.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://c.tile.opentopomap.org/{z}/{x}/{y}.png'] },
+  'OpenStreetMap': { maxzoom: 19, attribution: '© OpenStreetMap contributors',
+    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'] }
+};
+let curBase = lsGet('basemap');
+if (!BASEMAPS[curBase]) curBase = 'USGS Topo';
+
+// start where the map was last left; first-ever load tries the phone's location,
+// falling back to Zion
+const lastCenter = lsGet('lastCenter');
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    sources: Object.fromEntries(Object.entries(BASEMAPS).map(([k, v]) =>
+      ['base:' + k, { type: 'raster', tileSize: 256, ...v }])),
+    layers: Object.keys(BASEMAPS).map(k =>
+      ({ id: 'base:' + k, type: 'raster', source: 'base:' + k,
+         layout: { visibility: k === curBase ? 'visible' : 'none' } }))
+  },
+  center: lastCenter || [-112.90613, 37.23025],   // Zion
+  zoom: lsGet('lastZoom') ?? (lastCenter ? 9 : 14)   // 14 on the Zion fallback: close enough to see channels
+});
+if (!lastCenter && navigator.geolocation)
+  navigator.geolocation.getCurrentPosition(
+    p => { if (!location.hash) map.jumpTo({ center: [p.coords.longitude, p.coords.latitude], zoom: 12 }); },
+    () => {}, { maximumAge: 600000 });
+map.addControl(new maplibregl.NavigationControl());
+// MapLibre's own ResizeObserver misses late layout changes in some embedded webviews
+window.addEventListener('resize', () => map.resize());
+map.once('idle', () => map.resize());
+const scaleCtl = new maplibregl.ScaleControl({ unit: isUS() ? 'imperial' : 'metric' });
+map.addControl(scaleCtl);
+// a click sets the pour point — say so; MapLibre's canvas style overrides the #map CSS rule
+map.getCanvas().style.cursor = 'crosshair';
+
+// drag the divider to rebalance map vs panel (width on desktop, height on phones)
+{
+  const dv = $('divider');
+  const root = document.documentElement.style;
+  const mobile = matchMedia('(max-width: 700px)');
+  // A divider parked in iOS's bottom-edge gesture zone can never be grabbed again — the
+  // swipe moves the app window instead, and only a force-quit recovers. 122px of panel was
+  // still inside that zone on an 812px phone, so reserve 160. Clamped on load as well as on
+  // drag: innerHeight changes with rotation, so a stored value can be out of range later.
+  const clampH = p => Math.min((innerHeight - 160) / innerHeight * 100, Math.max(20, p));
+  if (lsGet('panelW')) root.setProperty('--panelw', lsGet('panelW') + 'px');
+  if (lsGet('mapH')) root.setProperty('--maph', clampH(lsGet('mapH')).toFixed(1) + '%');
+  dv.onpointerdown = e => {
+    e.preventDefault();
+    dv.setPointerCapture(e.pointerId);
+    dv.classList.add('dragging');
+    dv.onpointermove = ev => {
+      if (mobile.matches) {
+        const pct = clampH(ev.clientY / innerHeight * 100);
+        root.setProperty('--maph', pct.toFixed(1) + '%');
+        lsSet('mapH', +pct.toFixed(1));
+      } else {
+        const w = Math.min(600, Math.max(240, innerWidth - ev.clientX));
+        root.setProperty('--panelw', w + 'px');
+        lsSet('panelW', w);
+      }
+      map.resize();
+    };
+    dv.onpointerup = () => { dv.onpointermove = dv.onpointerup = null; dv.classList.remove('dragging'); };
+  };
+}
+
+for (const k of Object.keys(BASEMAPS)) {
+  const label = document.createElement('label');
+  const r = document.createElement('input');
+  r.type = 'radio';
+  r.name = 'basemap';
+  r.checked = k === curBase;
+  r.onchange = () => {
+    for (const b of Object.keys(BASEMAPS))
+      map.setLayoutProperty('base:' + b, 'visibility', b === k ? 'visible' : 'none');
+    lsSet('basemap', k);
+  };
+  label.append(r, ' ' + k);
+  $('basemaps').appendChild(label);
+}
+{
+  const big = $('chk-big');
+  big.checked = !!lsGet('bigText');
+  const applyBig = () => document.documentElement.classList.toggle('big', big.checked);
+  applyBig();
+  big.onchange = () => {
+    lsSet('bigText', big.checked);
+    applyBig();
+    if (cur && cur.basin) { renderBasinInfo(); renderForecastLinks(cur.basin); }   // chart text is SVG — redraw it
+  };
+}
+{
+  const cb = $('chk-metric');
+  cb.checked = !isUS();
+  cb.onchange = () => {
+    units = cb.checked ? 'metric' : 'us';
+    lsSet('units', units);
+    scaleCtl.setUnit(isUS() ? 'imperial' : 'metric');
+    if (cur && cur.basin) { renderBasinInfo(); renderForecastLinks(cur.basin); }   // redraw area, chart, spot labels
+  };
+}
+
+// StreamGrid overlay: the exact channel set the snap service can snap to (per state).
+// Always on — it's the authoritative "tap here and an exact basin comes back" picture,
+// and a basemap stream that ISN'T in it is precisely the trap worth seeing. Cheap: its
+// tiles only exist at zoom ≥ 11 (30 m cells are sub-pixel below), so nothing is fetched
+// or drawn until the map is near tapping range.
+let gridState = null;
+async function streamGridLayerId(state) {
+  let id = lsGet('ssgridlayer:' + state);
+  if (id == null) {
+    const d = await fetchRetry(`${SS_GIS}/${state}/MapServer?f=json`, undefined, 2);
+    const l = (d.layers || []).find(l => l.name === 'StreamGrid');
+    if (!l) return null;
+    id = l.id;
+    lsSet('ssgridlayer:' + state, id);
+  }
+  return id;
+}
+async function refreshStreamGrid() {
+  try {
+    // initial moveends can fire before the style/sources exist — bail; the 'load'
+    // handler (which adds them, then calls us) covers the first draw
+    if (!map.getSource('basin')) return;
+    const c = map.getCenter();
+    const state = await stateAt(c.lng, c.lat);
+    if (!state || state === gridState) return;
+    const id = await streamGridLayerId(state);
+    if (id == null) return;
+    if (map.getLayer('ssgrid')) { map.removeLayer('ssgrid'); map.removeSource('ssgrid'); }
+    map.addSource('ssgrid', { type: 'raster', tileSize: 256, minzoom: 11,
+      tiles: [`${SS_GIS}/${state}/MapServer/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&layers=show:${id}&f=image`] });
+    map.addLayer({ id: 'ssgrid', type: 'raster', source: 'ssgrid' }, 'basin-fill');
+    gridState = state;
+  } catch (e) { console.warn('StreamGrid overlay failed (decoration only):', e); }
+}
+map.on('moveend', refreshStreamGrid);
+map.on('moveend', () => {
+  const c = map.getCenter();
+  lsSet('lastCenter', [c.lng, c.lat]);
+  lsSet('lastZoom', map.getZoom());
+});
+
+const EMPTY = { type: 'FeatureCollection', features: [] };
+// run on the first 'styledata' (style parsed — inline, so instant), not 'load': 'load'
+// also waits for basemap TILES, and a hung tile server (OpenTopoMap does this) would
+// otherwise leave the app dead — no layers, taps and share links doing nothing
+let appLayersAdded = false;
+map.on('styledata', () => {
+  if (appLayersAdded) return;
+  appLayersAdded = true;
+  for (const id of ['basin', 'flowline', 'fcast', 'points']) map.addSource(id, { type: 'geojson', data: EMPTY });
+  map.addLayer({ id: 'basin-fill', type: 'fill', source: 'basin',
+    paint: { 'fill-color': '#3080f9', 'fill-opacity': 0.22 } });
+  map.addLayer({ id: 'basin-line', type: 'line', source: 'basin',
+    paint: { 'line-color': '#1a5fd0', 'line-width': 2 } });
+  map.addLayer({ id: 'flowline', type: 'line', source: 'flowline',
+    paint: { 'line-color': '#00b0d0', 'line-width': 2.5 } });
+  map.addLayer({ id: 'fcast', type: 'circle', source: 'fcast',
+    paint: { 'circle-radius': 5, 'circle-color': '#8b2fd0',    'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
+  map.addLayer({ id: 'snap-move', type: 'line', source: 'points',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: { 'line-color': '#e08000', 'line-width': 1.5, 'line-dasharray': [2, 2] } });
+  map.addLayer({ id: 'points', type: 'circle', source: 'points',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-radius': 6,
+      'circle-color': ['match', ['get', 'role'], 'snapped', '#e08000', '#666'],
+      'circle-stroke-color': '#fff', 'circle-stroke-width': 2
+    } });
+  routeFromHash();
+  refreshStreamGrid();   // restore the overlay if it was on last session
+});
+function setData(id, data) { const s = map.getSource(id); if (s) s.setData(data); }
+
+// ---------- hash routing (fragment is attacker-controlled — validate hard) ----------
+function parseHash() {
+  const raw = decodeURIComponent(location.hash.slice(1));
+  if (!raw) return null;
+  const parts = raw.split(',');
+  // Number('') is 0, so a blank field would quietly delineate Null Island. Require digits.
+  if (!parts[0]?.trim() || !parts[1]?.trim()) return null;
+  const lat = Number(parts[0]), lon = Number(parts[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  const name = parts.slice(2).join(',').slice(0, 100) || undefined;
+  return { lat, lon, name };
+}
+// Multi-pin share link: #pins:lat,lon,name;lat,lon,name;…
+// Names are percent-encoded, so decode PER FIELD — never the whole hash the way parseHash
+// does. A name containing ';' or ',' arrives as %3B / %2C and would otherwise split the
+// wrong field. Same validation as parseHash on every entry; bad entries are dropped, not
+// fatal, so one mangled pin doesn't cost the recipient the rest of the link.
+const MAX_IMPORT = 500;  // the fragment is attacker-controlled and this WRITES to their                // saved pins — bound how much a link can stuff into localStorage
+function parsePinsHash() {
+  const raw = location.hash.slice(1);
+  if (!/^pins:/i.test(raw)) return null;
+  const out = [];
+  for (const chunk of raw.slice(5).split(';')) {
+    const parts = chunk.split(',');
+    if (!parts[0]?.trim() || !parts[1]?.trim()) continue;   // see parseHash: Number('') is 0
+    const lat = Number(parts[0]), lon = Number(parts[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+    let name;
+    try { name = decodeURIComponent(parts[2] || '').trim().slice(0, 60) || undefined; } catch {}
+    out.push({ lat, lon, name });
+    if (out.length >= MAX_IMPORT) break;
+  }
+  return out.length ? out : null;
+}
+const pinKey = p => `${p.lat},${p.lon}`;
+// Which of `incoming` aren't saved yet — deduped against storage AND against itself, so a
+// link that repeats a coordinate counts it once. Keeping the LOCAL name on a collision is
+// the point: the recipient's own label for a spot they already saved beats the sender's.
+// This runs BEFORE the confirm, so the dialog can only ever offer genuinely new pins.
+function freshPins(incoming) {
+  const have = new Set((lsGet('pins') || []).map(pinKey));
+  const out = [];
+  for (const p of incoming) if (!have.has(pinKey(p))) { out.push(p); have.add(pinKey(p)); }
+  return out;
+}
+function routeFromHash() {
+  const imported = parsePinsHash();
+  if (imported) {
+    const f = imported[0];
+    const fresh = freshPins(imported);
+    const dup = imported.length - fresh.length;
+    const already = dup ? `${dup} ${dup === 1 ? 'was' : 'were'} already saved.` : '';
+    let msg;
+    if (!fresh.length) {
+      msg = 'Every pin in this link was already saved.';   // nothing to write, nothing to ask
+    } else {
+      // A link writing to their saved pins is the one place the fragment changes stored
+      // state, so it asks first — about the NEW ones only. Declining still shows the first
+      // drainage: that costs nothing and is what they clicked for. NOTE: a sandboxed iframe
+      // without allow-modals makes confirm() return false with no dialog; the fail direction
+      // is "don't write", which is the right one.
+      const names = fresh.slice(0, 8).map(p => p.name || `${p.lat},${p.lon}`);
+      const ok = confirm(`Add ${fresh.length} new pin${fresh.length === 1 ? '' : 's'} to your saved list?`
+        + `\n\n${names.join('\n')}`
+        + (fresh.length > names.length ? `\n…and ${fresh.length - names.length} more` : '')
+        + (already ? `\n\n${already}` : '') + `\n\nEither way, the first one opens.`);
+      if (ok) { lsSet('pins', (lsGet('pins') || []).concat(fresh)); renderPins(); }
+      msg = ok ? `Added ${fresh.length} pin${fresh.length === 1 ? '' : 's'} from this link.`
+                 + (already ? ` ${already}` : '')
+               : 'Pins from this link were not added.';
+    }
+    // Rewrite to the plain single-pin form and re-enter. Depth-1 recursion by construction:
+    // the hash is no longer a pins: link. replaceState fires no hashchange, so the first
+    // pin is delineated once, not twice.
+    history.replaceState(null, '', `#${f.lat},${f.lon}` + (f.name ? ',' + encodeURIComponent(f.name) : ''));
+    routeFromHash();
+    // NOT setStatus: delineate() owns that line and would overwrite this immediately. The
+    // import is a write to their saved pins, so it says so somewhere that stays put.
+    $('pins-msg').textContent = msg;
+    return;
+  }
+  const h = parseHash();
+  if (!h) {
+    if (location.hash.length > 1) setStatus('Invalid share link — expected #lat,lon,name.', 'err');
+    return;
+  }
+  if (cur && cur.lat === h.lat && cur.lon === h.lon) {
+    if (h.name && h.name !== cur.name) {
+      cur.name = h.name;
+      $('pin-name').value = h.name;
+      $('title').textContent = `Drainage — ${h.name}`;
+    }
+    return;
+  }
+  delineate(h.lat, h.lon, h.name).catch(e => {
+    if (cur && cur.exact) return;   // NLDI path failed but StreamStats already delivered
+    setStatus('FAILED: ' + e.message + ' — drainage is UNKNOWN, not empty. Any dimmed area is the previous result.', 'err');
+  });
+}
+window.addEventListener('hashchange', routeFromHash);
+const markerAt = pt => map.getLayer('points') &&
+  map.queryRenderedFeatures(pt, { layers: ['points'] }).some(f => f.properties.role);
+map.on('click', e => {
+  if (map.getLayer('fcast') && map.queryRenderedFeatures(e.point, { layers: ['fcast'] }).length) return;
+  if (markerAt(e.point)) return;   // the tap and pour-point markers open forecast popups instead
+  const lat = +e.lngLat.lat.toFixed(5), lon = +e.lngLat.lng.toFixed(5);
+  if (cur && cur.lat === lat && cur.lon === lon) return;
+  location.hash = `${lat},${lon}`;  // routeFromHash does the work → back button works
+});
+function forecastPopup(coords, label, url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.textContent = label + ' — forecast';
+  new maplibregl.Popup().setLngLat(coords).setDOMContent(a).addTo(map);
+}
+map.on('click', 'fcast', e => {
+  const p = e.features[0].properties;
+  forecastPopup(e.features[0].geometry.coordinates, p.label, p.url);
+});
+// the tap (grey) and pour point (orange) link to their NWS pages too, same as the
+// violet spots — they can sit in different forecast cells when the snap moved far
+map.on('click', 'points', e => {
+  const f = e.features.find(f => f.properties.role === 'snapped') ||   e.features.find(f => f.properties.role === 'tapped');
+  if (!f) return;
+  const [lon, lat] = f.geometry.coordinates;
+  forecastPopup(f.geometry.coordinates, f.properties.role === 'snapped' ? 'Pour point' : 'Your tap',
+    `https://forecast.weather.gov/MapClick.php?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`);
+});
+map.on('mouseenter', 'fcast', () => { map.getCanvas().style.cursor = 'pointer'; });
+map.on('mouseleave', 'fcast', () => { map.getCanvas().style.cursor = 'crosshair'; });
+map.on('mousemove', 'points', e => {
+  if (e.features.some(f => f.properties.role)) map.getCanvas().style.cursor = 'pointer';
+});
+map.on('mouseleave', 'points', () => { map.getCanvas().style.cursor = 'crosshair'; });
+
+// keep the previous drainage visible but dimmed while a new one loads — less jarring
+// than a blank map, and the back button restores the old one from cache anyway
+function dimOld(on) {
+  if (!map.getLayer('basin-fill')) return;
+  map.setPaintProperty('basin-fill', 'fill-opacity', on ? 0.08 : 0.22);
+  map.setPaintProperty('basin-line', 'line-opacity', on ? 0.3 : 1);
+  map.setPaintProperty('flowline', 'line-opacity', on ? 0.3 : 1);
+  map.setPaintProperty('fcast', 'circle-opacity', on ? 0.25 : 1);
+  map.setPaintProperty('fcast', 'circle-stroke-opacity', on ? 0.25 : 1);
+}
+
+// ---------- delineation ----------
+let cur = null;   // { lat, lon, name, comid, snap, basin, areaKm2 }
+let runId = 0;
+
+async function delineate(lat, lon, name) {
+  const run = ++runId;
+  cur = { lat, lon, name };
+  dimOld(true);
+  setData('points', { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { role: 'tapped' }, geometry: { type: 'Point', coordinates: [lon, lat] } }
+  ] });
+  $('basin-info').textContent = 'Working…';
+  $('forecast').textContent = '—';
+  $('alerts').textContent = '—';
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name']) $(b).disabled = true;
+  $('btn-clear').disabled = false;   // usable mid-delineation — it doubles as cancel
+  $('pin-name').value = name || '';
+  $('title').textContent = name ? `Drainage — ${name}` : 'Drainage';
+  setStatus('Finding the nearest mapped stream', 'busy');
+  upgradeStreamStats(lat, lon, run);   // in parallel — needs only the tap, not the comid
+
+  // 1. snap: hydrolocation (raindrop trace), fall back to comid/position
+  let snap = null, comid = null;
+  try {
+    const hl = await fetchRetry(`${NLDI}/linked-data/hydrolocation?f=json&coords=POINT(${lon} ${lat})`);
+    const f = (hl.features || []).find(f => f.properties.source === 'indexed' && f.properties.comid);
+    if (f) { snap = f.geometry.coordinates; comid = f.properties.comid; }
+  } catch (e) { /* fall through to position */ }
+  if (!comid) {
+    const pos = await fetchRetry(`${NLDI}/linked-data/comid/position?f=json&coords=POINT(${lon} ${lat})`);
+    const fl = (pos.features || [])[0];
+    if (!fl) throw new Error('No flowline found near this point');
+    comid = fl.properties.comid;
+    snap = turf.nearestPointOnLine(fl, [lon, lat]).geometry.coordinates;
+  }
+  if (run !== runId) return;
+  cur.comid = comid;
+  const movedM = turf.distance([lon, lat], snap, { units: 'kilometers' }) * 1000;
+  // StreamStats may have delivered the exact answer while we snapped — its orange point
+  // (usually far closer to the tap) and status must not be overwritten by this coarser one
+  if (!cur.exact) {
+    cur.snap = snap;
+    cur.movedM = movedM;
+    setData('points', { type: 'FeatureCollection', features: [
+      { type: 'Feature', properties: { role: 'tapped' }, geometry: { type: 'Point', coordinates: [lon, lat] } },
+      { type: 'Feature', properties: { role: 'snapped' }, geometry: { type: 'Point', coordinates: snap } },
+      { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[lon, lat], snap] } }
+    ] });
+    renderHazardsLink(snap);
+    setStatus(`Moved your point ${fmtDist(movedM)} onto the stream. Fetching drainage area (can take 30 s)`, 'busy');
+    // second chance for the exact path: a tap this far off-channel is outside
+    // StreamStats' snap radius, but the orange point sits ON a mapped stream —
+    // delineating there ends AT the point, killing the reach basin's downstream excess
+    if (movedM > 100) upgradeStreamStats(lat, lon, run, snap[1], snap[0]);
+  }
+  fetchRetry(`${NLDI}/linked-data/comid/${comid}?f=json`, undefined, 2)
+    .then(fl => {
+      if (run !== runId || cur.exact) return;
+      setData('flowline', fl);
+      // the NLDI basin ends at the DOWNSTREAM end of this whole reach — if the orange
+      // point sits near the reach's top, most of the shaded area is below the point
+      try {
+        const line = (fl.features || [fl])[0];
+        const len = turf.length(line);
+        const frac = len > 0 ? 1 - turf.nearestPointOnLine(line, snap).properties.location / len : 0;
+        if (frac >= 0.5) { cur.reachHead = true; if (cur.basin) renderBasinInfo(); }
+      } catch {}
+    })
+    .catch(() => {}); // flowline is decoration; basin render doesn't depend on it
+
+  // 2. basin (slow: 8–29 s) — cache by comid so saved pins survive NLDI outages
+  let basinFc = lsGet('basin:' + comid);
+  if (!basinFc) {
+    basinFc = await fetchRetry(`${NLDI}/linked-data/comid/${comid}/basin?f=json&simplified=false`);
+    lsSet('basin:' + comid, basinFc);
+  }
+  if (run !== runId || cur.exact) return;   // an exact result may have landed while we waited
+  const basin = basinFc.features ? basinFc.features[0] : basinFc;
+  if (!basin || !basin.geometry) throw new Error('Basin response had no geometry');
+  renderBasin(basin, 'whole catchment of this stream segment — can extend past the orange point; errs large, the safe direction');
+  setStatus(`Done. Drainage of the stream segment nearest your tap (${fmtDist(cur.movedM)} away) — it can include area past the orange point.`);
+
+  checkAlerts(basin, run);
+  upgradeSplit(lat, lon, basin, run);
+}
+
+function renderBasin(basin, sourceLabel) {
+  dimOld(false);
+  setData('basin', basin);
+  cur.basin = basin;
+  cur.areaKm2 = turf.area(basin) / 1e6;
+  cur.sourceLabel = sourceLabel;
+  renderBasinInfo();
+  map.fitBounds(turf.bbox(basin), { padding: 40 });
+  renderForecastLinks(basin);
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name']) $(b).disabled = false;
+  // ONE event per tap, not per render. NLDI and StreamStats both call renderBasin for the
+  // same tap (that is the whole parallel-upgrade design), so counting here without a guard
+  // double-counted every lookup where both paths succeeded — i.e. most of them. `cur` is
+  // rebuilt by delineate(), so the flag resets itself; the check and set are synchronous,
+  // so the two callers cannot both slip through.
+  if (!cur.counted) {
+    cur.counted = true;
+    stateAt(cur.lon, cur.lat)
+      .then(st => countEvent('delineate-' + (st || 'unknownstate')))
+      .catch(() => countEvent('delineate-unknownstate'));
+  }
+}
+
+// info panel only — separate so the units toggle can re-render without moving the map
+function renderBasinInfo() {
+  syncFbLoc();
+  const { basin, areaKm2 } = cur;
+  const info = $('basin-info');
+  info.textContent = '';
+  const line = document.createElement('div');
+  line.textContent = fmtArea(areaKm2);
+  line.title = `${cur.sourceLabel} · ${turf.coordAll(basin).length.toLocaleString()} boundary points` +      (cur.comid ? ` · NHD comid ${cur.comid}` : '');
+  info.appendChild(line);
+  if (areaKm2 < 2) {
+    const w = document.createElement('div');
+    w.className = 'warn';
+    // plain words, and only lead with the moved-point worry when the point actually moved:
+    // at gully scale, a big move can land the orange dot in the WRONG gully entirely
+    w.textContent = cur.exact
+      ? `⚠ Small drainage (${fmtArea(areaKm2)}).` + (cur.movedM > 60 ? ` Your point was moved ${fmtDist(cur.movedM)} — at this size that can reach a different gully. Check that the orange dot is in the gully you meant.` : ` Check on the map that the orange dot sits in the gully you meant.`)
+      : `⚠ ${fmtArea(areaKm2)} is suspiciously small — the point probably missed the stream, and the real drainage may be far bigger. Treat as broken until verified on a topo.`;
+    info.appendChild(w);
+  }
+  // the USGS stream map (1:100k) omits many small canyon streams; a big snap means the
+  // shaded drainage belongs to a DIFFERENT stream than the one tapped. Outside = dangerous.
+  if (!turf.booleanPointInPolygon([cur.lon, cur.lat], basin)) {
+    const w = document.createElement('div');
+    if (cur.movedM <= 100) {
+      // the pour point sits ON the basin boundary, so a tap slightly downslope of it
+      // lands just outside — normal, not a wrong-stream delineation
+      w.className = 'note';
+      w.textContent = `Your tap is just outside the boundary — the drainage begins at the orange point, ${fmtDist(cur.movedM)} away.`;
+    } else {
+      w.className = 'warn';
+      w.textContent = `⚠ Your tap is OUTSIDE this drainage — it snapped ${fmtDist(cur.movedM)} to a different stream. Rain over your actual spot may not show in this drainage's forecast or alerts.`;
+    }
+    info.appendChild(w);
+  } else if (cur.movedM > 150 && !(cur.exact && areaKm2 < 2)) {   // the small-drainage warn already covers the exact+small case
+    const w = document.createElement('div');
+    // beyond ~1 km the "nearest mapped stream" is a different drainage system entirely —
+    // that deserves a real warning, not a heads-up (flat desert washland does this)
+    const far = cur.movedM > 1000;
+    w.className = far ? 'warn' : 'note';
+    if (cur.exact)
+      w.textContent = `${far ? '⚠ ' : ''}Your tap was ${fmtDist(cur.movedM)} from the nearest mapped channel — the shaded area is what drains to the orange dot there. If you're standing in a smaller unmapped wash, its drainage isn't this one.`;
+    else w.textContent = far
+      ? `⚠ The nearest stream USGS can snap to is ${fmtDist(cur.movedM)} away, and this is that distant stream's drainage. It contains your tap, but the wash you're actually near isn't in the snapping networks — its own drainage is unknown.`
+      : `Heads-up: your tap was ${fmtDist(cur.movedM)} from the nearest mapped stream, so this is that stream's drainage. It contains your spot, but if you're in a small side canyon, its own (much smaller) drainage isn't separately mapped by USGS.`;
+    info.appendChild(w);
+  }
+  // Both branches above mean the same thing in practice: the pour point isn't where you
+  // tapped, and the fix is always the same. Snapping reaches only a few tens of meters —
+  // the service advertises 180 m but measurably reaches far less in places (~55 m at
+  // 37.16109,-113.30259), so "near the blue line" is not close enough; it has to be on it.
+  if (cur.movedM > 100) {
+    const t = document.createElement('div');
+    t.className = 'note';
+    t.textContent = `To get the drainage for where you actually are: zoom in and tap directly on a blue stream line. Landing even ${fmtDist(100)} away is often too far for the app to find the channel you meant.`;
+    info.appendChild(t);
+  }
+  if (cur.reachHead && !cur.exact && !cur.split) {
+    const w = document.createElement('div');
+    w.className = 'warn';
+    w.textContent = `⚠ The orange dot sits near the top of its stream segment, and USGS returns the whole segment's drainage — much of this shaded area is DOWNSTREAM of the dot. Rain checks over the extra area err safe, but the area draining to the dot itself is smaller.`;
+    info.appendChild(w);
+  }
+  if (cur.ssDown && !cur.exact && !cur.split) {
+    const w = document.createElement('div');
+    w.className = 'note';
+    w.textContent = `⚠ The StreamStats exact-point service failed (${cur.ssDown}) — this drainage is the coarser NLDI reach basin. If this repeats, the undocumented StreamStats endpoints may have changed.`;
+    info.appendChild(w);
+  }
+}
+
+// ---------- StreamStats exact-point delineation: opportunistic upgrade ----------
+// The streamstats.usgs.gov backend (endpoints read out of its appConfig.js): snap the tap
+// to a 30 m DEM-derived stream grid (search radius 120–180 m, varies by state), then
+// delineate the exact upslope area of the snapped cell. Built from 10 m elevation + 1:24k
+// streams, so it knows small canyon channels the 1:100k NLDI map lacks. Declines cleanly
+// (couldSnap:false) when the tap is too far from any channel it has — NLDI stays primary.
+// These endpoints are undocumented internals of the StreamStats web app and can change
+// without notice. A clean decline (no channel within the snap radius) is normal and
+// silent; an error or a shape we no longer recognize is breakage — surface it so the
+// silent downgrade to the coarser NLDI basin doesn't masquerade as the exact answer.
+function ssDown(run, detail) {
+  if (run !== runId || !cur || cur.exact) return;
+  cur.ssDown = detail;
+  if (cur.basin) renderBasinInfo();
+}
+// atLat/atLon: where to snap+delineate (defaults to the tap); lat/lon stay the tap for
+// the markers — the second-chance call passes the NLDI-snapped point here
+async function upgradeStreamStats(lat, lon, run, atLat = lat, atLon = lon) {
+  const state = await stateAt(atLon, atLat).catch(() => null);
+  if (!state) return;
+  try {
+    // v2 is what the StreamStats UI itself calls; success = scope:"stream" (v1/str900's
+    // couldSnap gives identical points, kept here as the reference: they agree)
+    const s = await fetchRetry(`${SS}/pourpoint/v2/snap/streamgrid/${state}?pt=POINT(${atLon}%20${atLat})`, undefined, 2);
+    if (!s || !('scope' in s)) throw new Error('snap response shape changed');
+    if (s.scope !== 'stream' || run !== runId || (cur && cur.exact)) return;   // clean decline — normal
+    const [slon, slat] = s.output.coordinates;
+    const key = `ssbasin:${slat.toFixed(5)},${slon.toFixed(5)}`;
+    let basin = lsGet(key);
+    if (!basin) {
+      const d = await fetchRetry(`${SS}/ss-delineate/v1/delineate/sshydro/${state}?lat=${slat}&lon=${slon}`, undefined, 2);
+      for (const g of (d && d.bcrequest && d.bcrequest.wsresp.featurecollection) || [])
+        for (const item of g) if (item.name === 'globalwatershed') basin = item.feature.features[0];
+      if (!basin || !basin.geometry) throw new Error('delineate returned no basin for a snapped point');
+      // degenerate-result trap (same fingerprint as splitcatchment): a point the service
+      // can't snap internally still returns HTTP 200 with a ~0 km² polygon — never render
+      if (turf.area(basin) / 1e6 < 0.01) throw new Error('delineate returned a degenerate basin');
+      lsSet(key, basin);
+    }
+    if (run !== runId || (cur && cur.exact)) return;
+    cur.exact = true;
+    cur.snap = [slon, slat];
+    cur.movedM = turf.distance([lon, lat], cur.snap, { units: 'kilometers' }) * 1000;
+    setData('points', { type: 'FeatureCollection', features: [
+      { type: 'Feature', properties: { role: 'tapped' }, geometry: { type: 'Point', coordinates: [lon, lat] } },
+      { type: 'Feature', properties: { role: 'snapped' }, geometry: { type: 'Point', coordinates: cur.snap } },
+      { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[lon, lat], cur.snap] } }
+    ] });
+    setData('flowline', EMPTY);      // the NLDI flowline belongs to a different stream — clear it
+    renderHazardsLink(cur.snap);
+    cur.source = 'USGS StreamStats (10 m DEM)';
+    renderBasin(basin, 'exact — ends at the orange point (StreamStats, 10 m elevation model)');
+    setStatus(`Done. Exact drainage of the channel ${fmtDist(cur.movedM)} from your tap (USGS StreamStats).`);
+    checkAlerts(basin, run);
+  } catch (e) { ssDown(run, e.message); }   // NLDI reach basin stands on its own; just say the upgrade broke
+}
+
+// ---------- splitcatchment: opportunistic upgrade, never source of truth ----------
+async function upgradeSplit(lat, lon, reachBasin, run) {
+  if (cur && cur.exact) return;   // StreamStats already gave the exact answer
+  try {
+    const r = await fetchRetry(`${NLDI}/pygeoapi/processes/nldi-splitcatchment/execution`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inputs: [
+        { id: 'lat', value: String(lat), type: 'text/plain' },
+        { id: 'lon', value: String(lon), type: 'text/plain' },
+        { id: 'upstream', value: 'True', type: 'text/plain' },
+        { id: 'simplified', value: 'False', type: 'text/plain' }
+      ] })
+    }, 2);
+    if (run !== runId || (cur && cur.exact)) return;
+    // The trap: HTTP 200 with no drainageBasin and a degenerate 0 km² splitCatchment.
+    // Never render splitCatchment; accept drainageBasin only if it agrees with the reach basin.
+    const db = (r.features || []).find(f => f.id === 'drainageBasin');
+    if (!db) return;
+    if (turf.area(db) < 0.5 * turf.area(reachBasin)) return;
+    cur.split = true;   // exact result — suppresses the reach-basin caveats (StreamStats may still override)
+    renderBasin(db, 'exact — ends at the orange point');
+  } catch (e) { /* upgrade only — reach basin already rendered */ }
+}
+
+// ---------- forecast links ----------
+function renderForecastLinks(basin) {
+  const pour = cur.snap;
+  const spots = [
+    { label: 'Nearest stream (where you are)', c: pour },
+    { label: 'Middle of the drainage', c: turf.centerOfMass(basin).geometry.coordinates }
+  ];
+  // 4 far-flung boundary points, greedy max-min so they spread instead of clustering
+  const coords = turf.coordAll(basin);
+  const chosen = spots.map(s => s.c);
+  for (let k = 0; k < 4; k++) {
+    let best = null, bestD = -1;
+    for (const p of coords) {
+      let d = Infinity;
+      for (const q of chosen) d = Math.min(d, turf.distance(q, p));
+      if (d > bestD) { bestD = d; best = p; }
+    }
+    chosen.push(best);
+    const d = turf.distance(pour, best, { units: isUS() ? 'miles' : 'kilometers' });
+    spots.push({ label: `Far edge, ${d.toFixed(1)} ${isUS() ? 'mi' : 'km'} ${compass(turf.bearing(pour, best))} of you`, c: best });
+  }
+  for (const s of spots)
+    s.url = `https://forecast.weather.gov/MapClick.php?lat=${s.c[1].toFixed(4)}&lon=${s.c[0].toFixed(4)}`;
+  setData('fcast', { type: 'FeatureCollection', features: spots.slice(1).map(s =>  // pour point already has its orange dot
+    ({ type: 'Feature', properties: { label: s.label, url: s.url }, geometry: { type: 'Point', coordinates: s.c } })) });
+  renderForecast(spots);
+}
+
+// ---------- forecast timeline: worst spot in the drainage, hourly ----------
+async function getGridInfo(c) { // [lon,lat] → {wfo, url, tz}; the NWS grid never moves, cache forever
+  const key = 'grid2:' + c[1].toFixed(2) + ',' + c[0].toFixed(2);
+  let g = lsGet(key);
+  if (!g) {
+    const p = await fetchRetry(`${NWS}/points/${c[1].toFixed(4)},${c[0].toFixed(4)}`);
+    g = { wfo: p.properties.gridId, url: p.properties.forecastGridData, tz: p.properties.timeZone };
+    lsSet(key, g);
+  }
+  return g;
+}
+const gridDataMemo = new Map();
+async function getGridData(url) {
+  const hit = gridDataMemo.get(url);
+  if (hit && Date.now() - hit.t < 30 * 60000) return hit.data;
+  const data = await fetchRetry(url, undefined, 2);
+  gridDataMemo.set(url, { t: Date.now(), data });
+  return data;
+}
+function durationHours(s) {
+  const m = /P(?:(\d+)D)?(?:T(?:(\d+)H)?)?/.exec(s || '');
+  return Math.max(1, (+(m?.[1] || 0)) * 24 + (+(m?.[2] || 0)));
+}
+// NWS series use irregular intervals (PT1H/PT3H/PT6H mixed) — resample to a common
+// hourly axis before maxing across cells. spread=true divides accumulations (QPF)
+// evenly over the interval; null stays null: unknown is not zero.
+function sampleHourly(values, t0, hours, spread) {
+  const out = new Array(hours).fill(null);
+  for (const v of values || []) {
+    if (v.value == null) continue;
+    const [startS, durS] = v.validTime.split('/');
+    const dur = durationHours(durS);
+    const first = Math.round((Date.parse(startS) - t0) / 3600000);
+    for (let h = 0; h < dur; h++) {
+      const i = first + h;
+      if (i >= 0 && i < hours) out[i] = spread ? v.value / dur : v.value;
+    }
+  }
+  return out;
+}
+const maxOrNull = vs => { const f = vs.filter(v => v != null); return f.length ? Math.max(...f) : null; };
+// all labels in the DRAINAGE's timezone, not the viewer's — someone in another timezone
+// planning a canyon trip needs "2pm" to mean 2pm at the canyon
+function hourIn(t, tz) { return +new Date(t).toLocaleString('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: tz }); }
+function fmtHour(t, tz, withDay) {
+  const h = hourIn(t, tz), lbl = (h % 12 || 12) + (h < 12 ? 'am' : 'pm');
+  return withDay ? new Date(t).toLocaleDateString([], { weekday: 'short', timeZone: tz }) + ' ' + lbl : lbl;
+}
+
+async function renderForecast(spots) {
+  const run = runId;
+  const el = $('forecast');
+  el.className = 'note';
+  el.textContent = 'Loading forecast…';
+  try {
+    const HOURS = 48;
+    const infos = await Promise.all(spots.map(s => getGridInfo(s.c)));
+    const cells = [...new Map(infos.map(i => [i.url, i])).values()]; // spots share grid cells — dedupe
+    const datas = await Promise.all(cells.map(i => getGridData(i.url)));
+    if (run !== runId) return;
+    const t0 = Math.floor(Date.now() / 3600000) * 3600000;
+    const qpf = [], pop = [];
+    const qpfAll = datas.map(d => sampleHourly(d.properties.quantitativePrecipitation?.values, t0, HOURS, true));
+    const popAll = datas.map(d => sampleHourly(d.properties.probabilityOfPrecipitation?.values, t0, HOURS, false));
+    for (let i = 0; i < HOURS; i++) {
+      qpf.push(maxOrNull(qpfAll.map(a => a[i])));
+      pop.push(maxOrNull(popAll.map(a => a[i])));
+    }
+    const pourData = datas[cells.findIndex(c => c.url === infos[0].url)].properties;
+    const inF = (pourData.temperature?.uom || '').includes('degF');
+    const temp = sampleHourly(pourData.temperature?.values, t0, HOURS, false)
+      .map(v => v == null ? null : inF ? v : v * 9 / 5 + 32);
+    drawTimeline(el, t0, qpf.map(v => v == null ? null : v / 25.4), pop, temp, infos[0].tz);
+  } catch (e) {
+    if (run !== runId) return;
+    el.className = 'warn';
+    el.textContent = `FORECAST UNKNOWN — could not load (${e.message}). `;
+    const a = document.createElement('a');
+    a.href = spots[0].url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = 'Try the NWS forecast page instead.';
+    el.appendChild(a);
+  }
+}
+
+function drawTimeline(el, t0, qpfIn, pop, temp, tz) {
+  el.className = '';
+  el.textContent = '';
+  qpfIn = qpfIn.map(v => v == null ? null : roundRain(v));
+  const n = qpfIn.length, W = 336, H = 132, plotH = 74, base = 96, w = W / n;
+  // y-scale floor: small amounts still draw (short), but when the 48 h max is itself
+  // tiny the axis can't autoscale to it — full height always means ≥ 0.1 in/hr
+  const qMax = Math.max(0.1, ...qpfIn.filter(v => v != null));
+  const fs = document.documentElement.classList.contains('big') ? 10 : 8;   // SVG text ignores CSS rem — scale it here
+
+  const head = document.createElement('div');
+  let peak = -1;
+  qpfIn.forEach((v, i) => { if (v != null && (peak < 0 || v > qpfIn[peak] ||
+    (v === qpfIn[peak] && (pop[i] ?? -1) > (pop[peak] ?? -1)))) peak = i; });
+  const popMax = maxOrNull(pop);
+  if (peak >= 0 && qpfIn[peak] >= 0.005) {
+    head.textContent = `Peak rain: ${fmtRain(qpfIn[peak])}/hr ${fmtHour(t0 + peak * 3600000, tz, true)}` +
+      (pop[peak] != null ? ` · ${Math.round(pop[peak])}% chance` : '');
+    if (qpfIn[peak] >= 0.1 && (pop[peak] ?? 0) >= 50) head.className = 'warn';
+  } else if (popMax == null) {
+    head.textContent = 'Rain data unavailable.';
+    head.className = 'warn';
+  } else if (popMax >= 20) {
+    head.textContent = `Little to no rain expected — top chance ${Math.round(popMax)}%.`;
+  } else {
+    head.textContent = 'No rain signal anywhere in this drainage for the next 48 h.';
+  }
+  el.appendChild(head);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%" xmlns="http://www.w3.org/2000/svg">`;
+  const tzName = new Date(t0).toLocaleTimeString('en-US', { timeZoneName: 'short', timeZone: tz }).split(' ').pop();
+  const tips = [];
+  for (let i = 0; i < n; i++) {
+    const x = i * w;
+    const tip = `${fmtHour(t0 + i * 3600000, tz, true)} ${tzName} — ` +
+      (pop[i] != null ? `${Math.round(pop[i])}% chance` : 'chance unknown') + ', ' +
+      (qpfIn[i] != null ? fmtRain(qpfIn[i]) : 'amount unknown') +
+      (temp[i] != null ? `, ${fmtTemp(temp[i])}${isUS() ? 'F' : 'C'}` : '');
+    tips.push(tip);
+    if (qpfIn[i] == null && pop[i] == null) {
+      svg += `<rect data-i="${i}" x="${x}" y="${base - plotH}" width="${w}" height="${plotH}" fill="#8884"><title>${tip}</title></rect>`;
+      continue;
+    }
+    if (qpfIn[i] > 0) {
+      const h = Math.max(2, plotH * qpfIn[i] / qMax);
+      svg += `<rect x="${x + 0.5}" y="${base - h}" width="${w - 1}" height="${h}" fill="#1a5fd0"/>`;
+    }
+    if (pop[i] > 0) {   // over the blue bar, not under — a tall bar was hiding the envelope
+      const py = base - plotH * pop[i] / 100;
+      svg += `<rect x="${x}" y="${py}" width="${w}" height="${plotH * pop[i] / 100}" fill="#10a05f" opacity="0.18"/>` +    `<line x1="${x}" y1="${py}" x2="${x + w}" y2="${py}" stroke="#10a05f" opacity="0.7"/>`;
+    }
+    svg += `<rect data-i="${i}" x="${x}" y="${base - plotH}" width="${w}" height="${plotH}" fill="transparent"><title>${tip}</title></rect>`;
+  }
+  svg += `<line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="#999"/>`;
+  for (let i = 0; i < n; i += 6) {
+    svg += `<text x="${i * w + 1}" y="${base + 11}" font-size="${fs}" fill="#555">${fmtHour(t0 + i * 3600000, tz)}</text>`;
+    if (temp[i] != null)
+      svg += `<text x="${i * w + 1}" y="${base - plotH - 5}" font-size="${fs}" fill="#b45309">${fmtTemp(temp[i])}</text>`;
+  }
+  // units/timezone live in the tapped-column readout — the row-edge labels crowded the chart
+  for (let i = 1; i < n; i++) {
+    const t = t0 + i * 3600000;
+    if (hourIn(t, tz) === 0) {
+      svg += `<line x1="${i * w}" y1="${base - plotH}" x2="${i * w}" y2="${base + 13}" stroke="#ccc"/>` +    `<text x="${i * w + 2}" y="${H - 3}" font-size="${fs + 1}" font-weight="bold" fill="#333">${new Date(t).toLocaleDateString([], { weekday: 'short', timeZone: tz })}</text>`;
+    }
+  }
+  svg += '</svg>';
+  const chart = document.createElement('div');
+  chart.innerHTML = svg; // numbers and locale strings only — nothing user-controlled
+  el.appendChild(chart);
+
+  // tap/click a column → its numbers, readable without hover (phones have no tooltips)
+  const detail = document.createElement('div');
+  detail.className = 'note';
+  detail.style.color = '#1a5fd0';   // match the bars — sets it apart from the grey decoder line below
+  detail.style.minHeight = '1.2em';
+  el.appendChild(detail);
+  chart.addEventListener('click', e => {
+    const r = e.target.closest('[data-i]');
+    if (r) detail.textContent = tips[+r.getAttribute('data-i')];
+  });
+
+  const note = document.createElement('div');
+  note.className = 'note';
+  // stays visible (not a tooltip): phones have no hover, and this is the only decoder
+  note.textContent = 'Each hour shows the worst spot in the drainage. Blue bars: rain per hour · green: chance of rain · tap any column for its numbers.';
+  el.appendChild(note);
+}
+
+// link to the local NWS office's watch/warning list — a page that exists even when
+// empty, so "no alerts" here can be checked against the source
+async function renderHazardsLink(snap) {
+  const el = $('alerts-link');
+  el.textContent = '';
+  try {
+    const { wfo } = await getGridInfo(snap);
+    const a = document.createElement('a');
+    a.href = `https://forecast.weather.gov/wwamap/wwatxtget.php?cwa=${encodeURIComponent(wfo)}&wwa=all`;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = 'Local NWS office advisories';
+    a.title = `Everything issued by office ${wfo}. Office areas span state lines, so items from neighboring states appear there too.`;
+    el.appendChild(a);
+  } catch { /* corroboration link only — the intersection above is the real check */ }
+}
+
+// ---------- alerts: intersect with basin, resolving zone geometry (never drop null-geometry alerts) ----------
+let statesGeo = null;
+// StreamStats endpoints want a state code; the tap's state is the right processing region
+async function stateAt(lon, lat) {
+  if (!statesGeo) statesGeo = await fetchRetry('vendor/us-states.json');
+  const f = statesGeo.features.find(f => turf.booleanPointInPolygon([lon, lat], f));
+  return f && f.properties.code;
+}
+const zoneMemo = new Map();
+async function getZoneGeometry(zurl) {
+  if (zoneMemo.has(zurl)) return zoneMemo.get(zurl);
+  const key = 'zone:' + zurl.split('/zones/')[1];
+  let g = lsGet(key);
+  if (g === null) {                     // null = never fetched; false = fetched, no geometry
+    const z = await fetchRetry(zurl);
+    g = z.geometry || false;
+    lsSet(key, g);                      // zone geometry never changes — cache forever
+  }
+  zoneMemo.set(zurl, g);
+  return g;
+}
+
+async function checkAlerts(basin, run) {
+  const el = $('alerts');
+  el.textContent = 'Checking alerts…';
+  el.className = 'note';
+  try {
+    if (!statesGeo) statesGeo = await fetchRetry('vendor/us-states.json');
+    const bboxPoly = turf.bboxPolygon(turf.bbox(basin));
+    const states = statesGeo.features.filter(f => turf.booleanIntersects(f, bboxPoly)).map(f => f.properties.code);
+    if (!states.length) throw new Error('basin bbox matched no US state');
+    const resp = await fetchRetry(`${NWS}/alerts/active?area=${states.join(',')}`);
+    const hits = [];
+    for (const a of resp.features || []) {
+      let geoms = a.geometry ? [a.geometry] : await Promise.all((a.properties.affectedZones || []).map(getZoneGeometry));
+      if (geoms.filter(Boolean).some(g => turf.booleanIntersects(g, basin))) hits.push(a);
+    }
+    if (run !== runId) return;
+    el.textContent = '';
+    // the footer's "no alerts ≠ safe" note only makes sense when there are no alerts
+    $('no-alerts-note').style.display = hits.length ? 'none' : '';
+    if (!hits.length) {
+      const d = document.createElement('div');
+      d.textContent = `No active alerts touch this drainage (${states.join(', ')}). Not the same as safe.`;
+      el.appendChild(d);
+    } else {
+      const rank = { Extreme: 0, Severe: 1, Moderate: 2, Minor: 3 };
+      hits.sort((x, y) => (rank[x.properties.severity] ?? 9) - (rank[y.properties.severity] ?? 9));
+      for (const a of hits) {
+        const d = document.createElement('div');
+        d.className = 'alert-item sev-' + (a.properties.severity || 'Unknown');
+        const b = document.createElement('strong');
+        b.textContent = `${a.properties.event} (${a.properties.severity})`;
+        const p = document.createElement('div');
+        p.textContent = a.properties.headline || a.properties.areaDesc || '';
+        d.append(b, p);
+        // the full CAP text is already in this response — no need to hunt it down on nws.gov
+        const full = [a.properties.description, a.properties.instruction].filter(Boolean).join('\n\n');
+        if (full) { const det = document.createElement('details'); det.className = 'note'; const sum = document.createElement('summary'); sum.textContent = 'Full alert text'; sum.style.cursor = 'pointer'; const body = document.createElement('div'); body.textContent = full;             // external string — textContent only body.style.whiteSpace = 'pre-wrap'; det.append(sum, body); d.appendChild(det);
+        }
+        el.appendChild(d);
+      }
+    }
+  } catch (e) {
+    if (run !== runId) return;
+    el.className = 'warn';
+    el.textContent = `ALERTS UNKNOWN — check failed (${e.message}). Do not read this as all-clear. `;
+    $('no-alerts-note').style.display = '';
+  }
+  alertsFooter(el);
+}
+
+// alerts go stale in an open tab — always show when they were fetched, and a way to re-run
+function alertsFooter(el) {
+  const d = document.createElement('div');
+  d.className = 'note';
+  d.append(`Checked ${new Date().toLocaleTimeString()} `);
+  const b = document.createElement('button');
+  b.textContent = '↻';
+  b.title = 'Re-check alerts';
+  b.setAttribute('aria-label', 'Re-check alerts');
+  b.style.cssText = 'border:none;background:none;cursor:pointer;font-size:0.8125rem;padding:0 2px;color:#666';
+  b.onclick = () => { if (cur && cur.basin) checkAlerts(cur.basin, runId); };
+  d.appendChild(b);
+  el.appendChild(d);
+}
+
+// ---------- export ----------
+// Both exports mirror the shape of StreamStats' own downloads, which GaiaGPS imports
+// correctly (user-verified 2026-08-29): Point + Polygon, flat scalar properties, no
+// styles, no extra features. Gaia dropped the polygon from our earlier richer exports;
+// chief suspect was the array-valued pour_point property (KML: the Style/styleUrl).
+const rawLabel = () => (cur.name || (cur.comid ? `Basin comid ${cur.comid}` : `Basin at ${cur.lat}, ${cur.lon}`)).trim();
+const basinLabel = () => /^basin\b|drainage$/i.test(rawLabel()) ? rawLabel() : rawLabel() + ' Drainage';
+// the name comes from the (attacker-controlled) fragment and lands in a download filename:
+// strip separators/control chars and leading dots. Browsers sanitize a.download too — belt
+// and suspenders.
+function exportName(ext) {
+  const safe = basinLabel().replace(/[\\/:*?"<>|\x00-\x1f]+/g, '-').replace(/^\.+/, '').trim();
+  return `${safe || 'basin'}.${ext}`;
+}
+$('btn-geojson').onclick = () => {
+  const fc = { type: 'FeatureCollection', bbox: turf.bbox(cur.basin), features: [
+    { type: 'Feature', properties: { name: rawLabel() + ' pour point' },
+      geometry: { type: 'Point', coordinates: cur.snap } },
+    { type: 'Feature',
+      properties: { name: basinLabel(), area_km2: +cur.areaKm2.toFixed(2),           source: cur.source || 'USGS NLDI (NHDPlus)' },
+      geometry: cur.basin.geometry }
+  ] };
+  downloadBlob(exportName('geojson'), 'application/geo+json', JSON.stringify(fc));
+  countEvent('export-geojson');
+};
+
+const xmlEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+$('btn-kml').onclick = () => {
+  const ring = r => r.map(c => `${c[0]},${c[1]}`).join(' ');
+  const poly = rings =>
+    `<Polygon><outerBoundaryIs><LinearRing><coordinates>${ring(rings[0])}</coordinates></LinearRing></outerBoundaryIs>` +
+    rings.slice(1).map(r => `<innerBoundaryIs><LinearRing><coordinates>${ring(r)}</coordinates></LinearRing></innerBoundaryIs>`).join('') +
+    `</Polygon>`;
+  const g = cur.basin.geometry;
+  const body = g.type === 'MultiPolygon'
+    ? `<MultiGeometry>${g.coordinates.map(poly).join('')}</MultiGeometry>`
+    : poly(g.coordinates);
+  const label = xmlEsc(rawLabel());
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<kml xmlns="http://www.opengis.net/kml/2.2"><Document>` +
+    `<Placemark><name>${label} pour point</name><ExtendedData></ExtendedData>` +
+    `<Point><coordinates>${cur.snap[0]},${cur.snap[1]}</coordinates></Point></Placemark>` +
+    `<Placemark><name>${xmlEsc(basinLabel())} — ${cur.areaKm2.toFixed(1)} km²</name><ExtendedData></ExtendedData>${body}</Placemark>` +
+    `</Document></kml>`;
+  downloadBlob(exportName('kml'), 'application/vnd.google-earth.kml+xml', kml);
+  countEvent('export-kml');
+};
+
+// back to the nothing-selected state, same as loading the page with no coordinate
+$('btn-clear').onclick = () => {
+  runId++;             // cancels any in-flight delineation
+  cur = null;
+  dimOld(false);
+  history.replaceState(null, '', location.pathname + location.search);
+  for (const id of ['basin', 'flowline', 'fcast', 'points']) setData(id, EMPTY);
+  $('title').textContent = 'Drainage';
+  syncFbLoc();
+  for (const [id, txt] of [['basin-info', 'Nothing delineated yet.'],                  ['forecast', 'Delineate a drainage to get its forecast.'],                  ['alerts', 'Delineate a drainage to check alerts.']]) {
+    $(id).className = 'note';
+    $(id).textContent = txt;
+  }
+  $('alerts-link').textContent = '';
+  $('no-alerts-note').style.display = '';
+  $('pin-name').value = '';
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'btn-clear']) $(b).disabled = true;
+  setStatus('Tap a point on the map to see everything that drains to it.');
+};
+
+$('btn-share').onclick = async () => {
+  countEvent('share');
+  try { await navigator.clipboard.writeText(location.href); setStatus('Share link copied.'); }
+  catch { setStatus('Copy this link: ' + location.href); } // no prompt() — blocked in embedded webviews
+};
+
+// ---------- usage counting: opt-in, fixed vocabulary ----------
+// EVENT_OK is exhaustive ON PURPOSE, and it is now the ONLY thing enforcing the promise
+// the Privacy bullets make: "Nothing else, and never a coordinate." The panel used to
+// print the whole vocabulary so a reader could check that claim against the code; that
+// list was removed 2026-08-31, so nothing user-visible catches a drift here any more.
+// Nothing below may interpolate a coordinate — when stateAt() fails the label is
+// 'delineate-unknownstate', never a lat/lon fallback. Widening this regex, or adding an
+// event whose name carries more than a US state, silently makes the Privacy text false.
+const GC_SITE = 'drainage';                // goatcounter has no key: the subdomain IS the site id
+const W3F_KEY = 'ae400d2c-c024-4eca-b74f-6a5ecd1fe876';   // web3forms; public by design, per their docs
+const EVENT_OK = /^(delineate-(?:[A-Z]{2}|unknownstate)|export-(?:geojson|kml)|share|pin|feedback-(?:up|down))$/;
+// Who linked to or embedded the app, reduced to a bare origin. Inside an iframe
+// document.referrer is the PARENT page, which is the embed-detection we want. Origin only,
+// never the path: a linking URL can itself be private (an internal wiki page, a club's
+// trip plan), and the origin answers the question without that risk. Empty for direct
+// visits and whenever the linking page sets a strict referrer policy — that is normal.
+function referrerOrigin() {
+  try {
+    if (!document.referrer) return '';
+    const o = new URL(document.referrer).origin;
+    return o === location.origin ? '' : o;   // our own pages aren't referrers
+  } catch { return ''; }
+}
+// a browser-level "do not track" beats the stored choice and can't be overridden from here
+const dntOn = navigator.globalPrivacyControl === true || navigator.doNotTrack === '1';
+// On by default: only an explicit false (the checkbox) or a browser-level do-not-track
+// turns it off. No first-run prompt — most people ignore those, which made the numbers
+// meaningless; the switch lives in "About this app" instead.
+const countingOn = () => !dntOn && lsGet('analytics') !== false;
+
+function countEvent(name) {
+  if (!countingOn() || !EVENT_OK.test(name)) return;
+  // Deliberately NOT goatcounter's count.js. That script loads from a CDN (this app vendors
+  // everything for a reason) and adds fields of its own — it was observed sending
+  // q=<location.search> and the screen size, neither of which the panel's promise mentions.
+  // Their documented tracking pixel lets us build the whole request, so the wire matches the
+  // words exactly: one label, and nothing else.
+  //
+  // WHAT WE CANNOT STRIP: every HTTP request carries the caller's IP address and
+  // User-Agent. There is no browser API to suppress them — not fetch, not an image, not
+  // any header we control. So GoatCounter receives both, and that is unavoidable for ANY
+  // counting that leaves the device at all.
+  //
+  // What makes it acceptable: GoatCounter hashes IP + User-Agent with a salt that rotates
+  // every 8 hours, keeps the hash in memory only, and never writes either to disk. The
+  // site owner (us) never sees them — only aggregate totals, plus a browser name and a
+  // country derived server-side. See https://www.goatcounter.com/help/privacy
+  //
+  // This is why the panel does not claim "nothing leaves your device". It claims we do not
+  // collect anything personal, which is a different and true statement. Keep it that way.
+  const img = new Image();
+  // no-referrer stops the BROWSER attaching a Referer header (which would be the full URL,
+  // fragment aside). What we do send is the r= below, built by us and trimmed to an origin.
+  img.referrerPolicy = 'no-referrer';
+  const ref = referrerOrigin();
+  img.src = `https://${GC_SITE}.goatcounter.com/count?p=${encodeURIComponent(name)}&e=true` + (ref ? `&r=${encodeURIComponent(ref)}` : '') + `&rnd=${Math.random().toString(36).slice(2)}`;
+}
+// Keeps the checkbox and its status line honest about the actual state — a browser-level
+// do-not-track overrides the stored choice, so the box must be able to read "off, disabled"
+// even though nobody clicked it.
+function renderPrivacy() {
+  $('chk-count').checked = countingOn();
+  $('chk-count').disabled = dntOn;
+  $('count-state').textContent = dntOn
+    ? '— off. Your browser asks sites not to track, and this app honors that.'
+    : (countingOn() ? '' : '— off. Nothing is sent.');
+}
+$('chk-count').onchange = () => { lsSet('analytics', $('chk-count').checked); renderPrivacy(); };
+renderPrivacy();
+
+// ---------- feedback ----------
+// Two services, two jobs: GoatCounter counts that a rating happened, Web3Forms carries the
+// typed note to an inbox. The Web3Forms key is public by design — it identifies the form,
+// it is not a credential, and the destination address lives on their server, not in here.
+// A thumb only opens the note field — nothing is sent until Send. The counter event fires
+// with the email (see onsubmit), so every counted rating has a matching message and a
+// change of mind cannot inflate the count.
+let fbRating = null;                       // 'up' | 'down', set by the thumbs, read on submit
+for (const [id, val] of [['fb-up', 'up'], ['fb-down', 'down']]) $(id).onclick = () => {
+  fbRating = fbRating === val ? null : val;   // same thumb twice = changed my mind, no rating
+  $('fb-up').setAttribute('aria-pressed', String(fbRating === 'up'));
+  $('fb-down').setAttribute('aria-pressed', String(fbRating === 'down'));
+  $('fb-more').hidden = !fbRating;            // nothing to send without one; a typed note
+  if (fbRating) syncFbLoc();                  // survives hiding, so re-picking gets it back
+};
+// The offer to attach a spot is derived from `cur`, so it has to be recomputed wherever
+// `cur` changes — not just when a thumb is clicked. Picking a thumb and THEN delineating
+// used to leave the box hidden. Re-ticks on a fresh delineation: the box is an offer, and
+// a new drainage is a new offer. Never ticked with nothing to attach.
+function syncFbLoc() {
+  const has = !!cur && cur.areaKm2 != null;
+  $('fb-loc-box').hidden = !has;
+  $('fb-loc').checked = has;
+  if (has) $('fb-loc-val').textContent =
+    `${cur.lat}, ${cur.lon} · ${cur.name || '(unnamed)'} · ${fmtArea(cur.areaKm2)}`;
+}
+$('fb-more').onsubmit = async e => {
+  e.preventDefault();
+  if ($('fb-botcheck').checked) return;          // honeypot tripped: silently drop
+  if (!fbRating) return;                        // form is hidden without one — belt and braces
+  $('fb-status').textContent = 'Sending…';
+  const body = { access_key: W3F_KEY, subject: 'Drainage feedback', from_name: 'Drainage',        rating: fbRating, comment: $('fb-comment').value.slice(0, 2000) };
+  if ($('fb-loc').checked && cur) body.spot = $('fb-loc-val').textContent;
+  try {
+    const r = await fetch('https://api.web3forms.com/submit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(r.status);
+    countEvent('feedback-' + fbRating);   // on send, not on click: keeps the count equal to
+    $('fb-more').hidden = true;           // the emails, and a change of mind can't inflate it
+    $('fb-ask').textContent = 'Sent — thanks.';
+  } catch { $('fb-status').textContent = 'Couldn’t send. Try again in a moment.'; }
+};
+
+// ---------- saved pins ----------
+// the name field is always live: typing updates the title and the share link as you go
+function applyName() {
+  if (!cur) return;
+  cur.name = $('pin-name').value.trim().slice(0, 60) || undefined;
+  $('title').textContent = cur.name ? `Drainage — ${cur.name}` : 'Drainage';
+  // replaceState: renaming shouldn't pile up history entries or re-trigger delineation
+  history.replaceState(null, '', `#${cur.lat},${cur.lon}` + (cur.name ? ',' + encodeURIComponent(cur.name) : ''));
+  syncFbLoc();
+}
+let nameTimer;
+$('pin-name').oninput = () => { clearTimeout(nameTimer); nameTimer = setTimeout(applyName, 300); };
+$('btn-pin').onclick = () => {
+  clearTimeout(nameTimer);
+  applyName();
+  const pins = lsGet('pins') || [];
+  pins.push({ lat: cur.lat, lon: cur.lon, name: cur.name });
+  lsSet('pins', pins);
+  countEvent('pin');
+  renderPins();
+};
+function renderPins() {
+  const ul = $('pins');
+  ul.textContent = '';
+  const pins = lsGet('pins') || [];
+  const label = p => p.name || `${p.lat}, ${p.lon}`;
+  pins.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base' }));
+  pins.forEach((p, i) => {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = `#${p.lat},${p.lon}` + (p.name ? ',' + encodeURIComponent(p.name) : '');
+    a.textContent = label(p);
+    const ren = document.createElement('button');
+    ren.className = 'pin-ren';
+    ren.textContent = '✎';
+    ren.title = 'Rename pin';
+    ren.onclick = () => {   // inline edit — prompt() is blocked in embedded webviews
+      const inp = document.createElement('input');
+      inp.value = p.name || '';
+      inp.maxLength = 60;
+      li.replaceChild(inp, a);
+      inp.focus();
+      inp.onblur = () => { p.name = inp.value.trim().slice(0, 60) || undefined; lsSet('pins', pins); renderPins(); };
+      inp.onkeydown = e => { if (e.key === 'Enter') inp.blur();                    if (e.key === 'Escape') { inp.onblur = null; renderPins(); } };
+    };
+    const del = document.createElement('button');
+    del.className = 'pin-del';
+    del.textContent = '✕';
+    del.title = 'Delete pin';
+    del.onclick = () => { pins.splice(i, 1); lsSet('pins', pins); renderPins(); };
+    // the checkbox carries its own pin, so building a share link is a DOM read — no
+    // selection state to keep in sync with a list that re-renders on every rename
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'pin-cb';
+    cb.dataset.lat = p.lat;
+    cb.dataset.lon = p.lon;
+    if (p.name) cb.dataset.name = p.name;
+    cb.setAttribute('aria-label', `Select ${label(p)} for a share link`);
+    li.append(cb, ' ', a, ' ', ren, del);
+    ul.appendChild(li);
+  });
+  if (!pins.length) { const li = document.createElement('li'); li.className = 'note'; li.textContent = 'None yet.'; ul.appendChild(li); }
+  syncPinShare();
+}
+const pinBoxes = () => [...$('pins').querySelectorAll('.pin-cb')];
+function syncPinShare() {
+  const cbs = pinBoxes(), n = cbs.filter(c => c.checked).length;
+  $('pins-ctl').hidden = !cbs.length;
+  $('pins-all').textContent = n === cbs.length ? 'Select none' : 'Select all';
+  // the count is IN the label: a bare "Share"/"Delete" next to the per-row ✎/✕ reads as
+  // "act on one pin", and the number is what says "act on the selection"
+  for (const [id, verb] of [['pins-share', 'Share'], ['pins-del', 'Delete']]) {
+    $(id).disabled = !n;
+    $(id).textContent = n ? `${verb} ${n}` : verb;
+  }
+}
+$('pins').onchange = syncPinShare;      // delegated: survives every renderPins()
+$('pins-all').onclick = () => {
+  const cbs = pinBoxes(), allOn = cbs.every(c => c.checked);
+  for (const c of cbs) c.checked = !allOn;
+  syncPinShare();
+};
+$('pins-share').onclick = async () => {
+  const sel = pinBoxes().filter(c => c.checked);
+  if (!sel.length) return;
+  // origin+pathname, not location.href: the current fragment is one drainage and must not
+  // leak into a link that is about a different set of them
+  const link = location.origin + location.pathname + '#pins:' + sel.map(c =>
+    `${c.dataset.lat},${c.dataset.lon}` + (c.dataset.name ? ',' + encodeURIComponent(c.dataset.name) : '')
+  ).join(';');
+  countEvent('share');
+  try { await navigator.clipboard.writeText(link); $('pins-msg').textContent = `Link to ${sel.length} pin${sel.length === 1 ? '' : 's'} copied.`; }
+  catch { $('pins-msg').textContent = 'Copy this link: ' + link; }   // no prompt() in webviews
+};
+$('pins-del').onclick = () => {
+  const doomed = new Set(pinBoxes().filter(c => c.checked).map(c => `${c.dataset.lat},${c.dataset.lon}`));
+  if (!doomed.size) return;
+  // there is no undo, and the row ✕ deletes one — so a bulk delete says how many first
+  if (!confirm(`Delete ${doomed.size} saved pin${doomed.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  lsSet('pins', (lsGet('pins') || []).filter(p => !doomed.has(pinKey(p))));
+  renderPins();
+  $('pins-msg').textContent = `Deleted ${doomed.size} pin${doomed.size === 1 ? '' : 's'}.`;
+};
+renderPins();
+</script>
+</body>
+</html>

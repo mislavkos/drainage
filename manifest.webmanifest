@@ -1,0 +1,14 @@
+{
+  "name": "Drainage",
+  "short_name": "Drainage",
+  "description": "Tap a point on a topo map — see the drainage that feeds it, its 48-hour rain forecast, and active NWS alerts.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "logo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "logo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

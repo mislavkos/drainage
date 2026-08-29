@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <style>
+    path { fill: none; stroke: #111; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+    @media (prefers-color-scheme: dark) { path { stroke: #f2f2f2; } }
+  </style>
+  <path d="M40 6 C34 23 22 33 22 44 C22 54 30 62 40 62 C50 62 58 54 58 44 C58 33 46 23 40 6 Z"/>
+  <path d="M98 34 C95 43 88 48 88 54 C88 60 93 64 98 64 C104 64 108 60 108 54 C108 48 102 43 98 34 Z"/>
+  <path d="M66 76 C61 90 52 98 52 106 C52 114 58 120 66 120 C74 120 80 114 80 106 C80 98 71 90 66 76 Z"/>
+</svg>
