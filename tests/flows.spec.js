@@ -146,14 +146,14 @@ test('multi-pin import: all duplicates → no dialog at all', async ({ page }) =
 test('invalid share link shows the error, not silence', async ({ page }) => {
   await mockServices(page);
   await page.goto('/#garbage');
-  await expect(page.locator('#status')).toHaveText('Invalid share link — expected #lat,lon,name.');
+  await expect(page.locator('#status')).toHaveText('Invalid share link — expected #lat,lon,name, in decimal degrees.');
   await expect(page.locator('#status')).toHaveClass('err');
 });
 
 test('a link with a broken percent-escape shows the invalid-link error instead of throwing', async ({ page }) => {
   await mockServices(page);
   await page.goto('/#37.2,-112.9,100%');
-  await expect(page.locator('#status')).toHaveText('Invalid share link — expected #lat,lon,name.');
+  await expect(page.locator('#status')).toHaveText('Invalid share link — expected #lat,lon,name, in decimal degrees.');
   await expect(page.locator('#status')).toHaveClass('err');
 });
 
@@ -240,4 +240,104 @@ test('saving and deleting pins round-trips through localStorage', async ({ page 
   ]);
   await page.locator('#pins li .pin-del').click();
   await expect(page.locator('#pins li')).toHaveText('None yet.');
+});
+
+test('unpublished: Ω rides in the name, groups at the bottom, and gates both share paths', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-write']);   // config denies all by default
+  await mockServices(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('drainage:pins', JSON.stringify([
+      { lat: 38, lon: -109, name: 'Ω Secret' }, { lat: 39, lon: -110, name: 'Zion Public' },
+    ]));
+  });
+  await page.goto('/' + HASH);
+  await doneStatus(page);
+  // sorted into blocks, not by collation: Z before Ω even though Ω is alphabetically nowhere
+  await expect(page.locator('#pins li a')).toHaveText(['Zion Public', 'Ω Secret']);
+  await expect(page.locator('#pins li').nth(1)).toHaveClass('unpub');
+
+  // ticking the box rewrites the name box, the title and the URL
+  await page.locator('#pin-name').fill('Neon');
+  await page.locator('#chk-unpub').check();
+  await expect(page.locator('#pin-name')).toHaveValue('Ω Neon');
+  await expect(page.locator('#title')).toHaveText('Drainage — Ω Neon');
+  expect(decodeURIComponent(page.url())).toContain('#37.2,-112.9,Ω Neon');
+
+  // single share: declining copies nothing (Playwright auto-dismisses = confirm() false)
+  let msg = '';
+  page.once('dialog', d => { msg = d.message(); d.dismiss(); });
+  await page.locator('#btn-share').click();
+  expect(msg).toContain('1 unpublished spot');
+  await expect(page.locator('#status')).toHaveText('Link not copied.');
+
+  // group share: only the ticked Ω pins are named, and accepting goes through
+  await page.locator('#btn-pin').click();
+  await page.locator('#pins-all').click();
+  page.once('dialog', d => { msg = d.message(); d.accept(); });
+  await page.locator('#pins-share').click();
+  expect(msg).toContain('2 unpublished spots');
+  expect(msg).toContain('Ω Secret');
+  expect(msg).not.toContain('Zion Public');
+  await expect(page.locator('#pins-msg')).toContainText('Link to 3 pins copied.');
+
+  // and unticking strips it again
+  await page.locator('#chk-unpub').uncheck();
+  await expect(page.locator('#pin-name')).toHaveValue('Neon');
+  await page.locator('#btn-share').click();          // no dialog to dismiss now
+  await expect(page.locator('#status')).toHaveText('Share link copied.');
+});
+
+test('shift-click selects a range of saved pins', async ({ page }) => {
+  await mockServices(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('drainage:pins', JSON.stringify(
+      ['A', 'B', 'C', 'D'].map((n, i) => ({ lat: 38 + i, lon: -109, name: n }))));
+  });
+  await page.goto('/');
+  await expect(page.locator('#pins li')).toHaveCount(4);
+  await page.locator('.pin-cb').nth(0).check();
+  await page.locator('.pin-cb').nth(2).click({ modifiers: ['Shift'] });
+  await expect(page.locator('#pins-share')).toHaveText('Share 3');
+  // shift-unclick clears the range the same way
+  await page.locator('.pin-cb').nth(0).click({ modifiers: ['Shift'] });
+  await expect(page.locator('#pins-share')).toHaveText('Share');
+});
+
+test('pasted coordinates: spaces, missing comma, degrees — and the URL is canonicalized', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/#37.2, -112.9, My Spot');       // the shape people actually paste
+  await doneStatus(page);
+  expect(page.url()).toContain('#37.2,-112.9,My%20Spot');   // no %20 left in the coordinates
+  await expect(page.locator('#title')).toHaveText('Drainage — My Spot');
+  await page.goto('/#(+37.2° -112.9°)');            // no comma at all, degrees, parens
+  await doneStatus(page);
+  expect(page.url()).toContain('#37.2,-112.9');
+  await page.goto('/#37°13\'17\"N 112°57\'36\"W');   // DMS reads as invalid, never as junk decimals
+  await expect(page.locator('#status')).toHaveText(/^Invalid share link/);
+});
+
+test('pasted UTM: converted, noted, and canonicalized to decimal degrees', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/#327065mE 4122955mN,Pine Creek');
+  await doneStatus(page);
+  expect(page.url()).toContain('#37.23709,-112.94958,Pine%20Creek');
+  // which zone was assumed has to survive delineate() overwriting the status line
+  await expect(page.locator('#coord-note')).toContainText('UTM zone 12, WGS84 → 37.23709, -112.94958');
+  await expect(page.locator('#coord-note')).toContainText('assumed from the map view');
+  await page.locator('#btn-clear').click();
+  await expect(page.locator('#coord-note')).toHaveText('');
+});
+
+test('saving a name that is already taken overrides that pin', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/' + HASH + ',Keeper');
+  await doneStatus(page);
+  await page.locator('#btn-pin').click();
+  await page.goto('/#37.5,-112.5,keeper');       // different spot, same name (other case)
+  await doneStatus(page);
+  await page.locator('#btn-pin').click();
+  await expect(page.locator('#pins li')).toHaveCount(1);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')))).toEqual([
+    { lat: 37.5, lon: -112.5, name: 'keeper' },
+  ]);
 });

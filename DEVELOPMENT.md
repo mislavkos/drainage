@@ -43,6 +43,32 @@ the app looks fine.
 - **Basemaps, all keyless**: USGS Topo (default), USGS ImageryTopo, OpenTopoMap, OSM.
   ArcGIS tile order is `{z}/{y}/{x}` — row before column. OpenTopoMap's volunteer
   servers 502 intermittently at high zoom; known quirk, not a bug here.
+- **Unpublished spots are marked by a leading `Ω` in the name, not by a stored flag**
+  (2026-08-31, user's own convention from code). The marker then rides along through the
+  fragment, share links, export filenames, KML titles and the recipient's saved pins for
+  free, and there is no second piece of state that can drift out of sync with the name.
+  `isUnpub`/`bareName`/`UNPUB` are the only places that know the sigil. Consequences,
+  all accepted: an unnamed spot can't be marked without becoming named (`Ω` alone, which
+  `label()` renders as `Ω lat, lon`); renaming a pin can strip the marker; and the
+  saved-pin sort compares `bareName` so the Ω block is alphabetical inside itself. The
+  share hurdle is a `confirm()` in front of *both* share paths (`okToShareUnpub`) — the
+  point is only to stop the accidental share, never to prevent a deliberate one.
+- **Pasted coordinates are read forgivingly, then the URL is rewritten** (2026-08-31).
+  `parseHash` accepts spaces for the comma, degree signs, parens, a unicode minus, and
+  falls through to `parseUtm` when the pair is out of lat/lon range (327065 is not a
+  latitude, so the two forms can't collide). Whitespace separates lat from lon *only* —
+  everything after the next comma is the name, which legitimately holds spaces and
+  commas. DMS is deliberately **not** parsed: invalid beats a silently wrong decimal.
+  `routeFromHash` canonicalizes the fragment to `#lat,lon,name` on every entry, because
+  Share copies `location.href` and a tolerated paste would otherwise ship its `%20`s.
+- **UTM in 20 lines, not proj4** (2026-08-31). `utmToLatLon` is the Snyder USGS PP 1395
+  inverse series on WGS84; a 40 KB projection library for the one projection anyone
+  pastes is not worth it. Validated three independent ways (see "Validation"). The zone
+  is usually missing from pasted beta, so the **map's current view supplies it** — right
+  whenever you're looking at the ground the coordinates came from, and the note under
+  the status line says which zone was assumed, because a wrong zone lands ~450 km
+  sideways. Northern hemisphere only (every service here is US-only); a southern
+  latitude band (`C`–`M`) is refused rather than placed 10 000 km away.
 - **Units toggle** persisted; internal storage stays °F/inches. Area shows in the
   active unit; rain in/mm; temps °F/°C.
 - **No custom domain** (2026-08-31). The one real argument for it — origin isolation,
@@ -257,10 +283,14 @@ eyeballing the chart proves insufficient.
 
 The fragment is attacker-controlled ("someone sends you a link"):
 
-- `name` renders via `textContent` only; lat/lon validated non-blank (**`Number('')`
+- `name` renders via `textContent` only; lat/lon must contain **digits** (**`Number('')`
   is 0** — a blank field would delineate Null Island, and the range check alone can't
-  catch it because 0,0 is valid), finite, and in range. A malformed percent-escape
+  catch it because 0,0 is valid), and be finite and in range. A malformed percent-escape
   (links get truncated by messaging apps) reads as invalid instead of throwing.
+- The UTM path is bounded before it projects: zone 1–60, easting 100 000–999 999,
+  northing ≤ 9 500 000, then the same lat/lon range check on the result. It writes
+  nothing to storage — worst case is a fragment that delineates the wrong valid point,
+  which the note under the status line and the map jump both make visible.
 - Multi-pin links decode **per field**, never the whole hash — a name containing `;`
   or `,` would otherwise split the wrong field. One mangled pin is dropped, not fatal.
 - The pin import is the only path where the fragment *writes* to stored state: it
@@ -346,7 +376,7 @@ space-separated, handle MultiPolygon + interior rings.
 ## Tests
 
 Dev-only Playwright suite; the app itself has no dependencies. `npm install`,
-`npx playwright install chromium`, `npm test` (~30 tests, well under a minute, and the
+`npx playwright install chromium`, `npm test` (~36 tests, well under a minute, and the
 README documents it for contributors).
 
 - **Fully mocked network** (`tests/mock.js`): every USGS/NWS/GoatCounter/Web3Forms
@@ -360,6 +390,9 @@ README documents it for contributors).
 - **`test.fixme` convention**: a confirmed open bug gets a fixme test asserting the
   *intended* behavior — it shows as skipped, documents the repro, and starts passing
   when the bug is fixed.
+- **Don't assert against the analytics cache-buster.** `countEvent` appends a random
+  `rnd=`; the "never a coordinate" test strips it before matching `/37|112/`, or a
+  random `37` fails the suite about one run in eight (fixed 2026-08-31).
 - The counting test stubs `window.Image` and captures the `src` setter — records the
   exact wire request without anything reaching the live dashboard.
 
@@ -373,6 +406,22 @@ Two-GET NLDI path vs the field:
 | Paria/Buckskin confl. | 37.0710, -111.8790 | 18267057 | 1733.6 km² |
 | Zion Narrows, Big Spring | 37.2870, -112.9490 | 10025820 | 742.2 km² |
 | Antelope Canyon, Page AZ | 36.8640, -111.3740 | 3529041 | 245.1 km² |
+
+UTM inverse (`utmToLatLon`), validated 2026-08-31 three ways that don't reuse its own
+output — a projection that is 450 km wrong is indistinguishable from a right one on a
+zoomed-out map, so "it looks like Zion" is not validation:
+
+1. **Invariants**: `utmToLatLon(31, 500000, 0)` returns exactly `[0, 3]` — easting
+   500 000 is the central meridian by definition, northing 0 the equator.
+2. **Meridian arc by quadrature**: on the central meridian the northing is purely the
+   meridian arc, so `N/k0 = 4 124 604.842 m` was inverted to a latitude by numerically
+   integrating the meridional radius of curvature (400 k steps, bisection). Independent
+   result `37.2531434756` vs the series' `37.2531434748` — agreement to ~0.1 mm. This is
+   the value the unit test asserts.
+3. **Round-trip through an independent forward series**: Snyder's *forward* series (a
+   different formula set) reprojected the off-meridian answer
+   `37.23709162, -112.94958113` back to zone 12 and returned `327064.99998, 4122955.00001`
+   — 1.6 cm out, i.e. floating-point noise.
 
 Against published NWIS gage drainage areas:
 

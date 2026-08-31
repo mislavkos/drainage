@@ -30,6 +30,29 @@ test('parseHash: rejects blanks (Number("") is 0 — the Null Island bug), NaN, 
   }
 });
 
+test('parseHash: UTM, with and without a zone, either field order', async ({ page }) => {
+  // the app's default map centre is Zion → zone 12 when the paste omits it
+  const want = { lat: 37.23709, lon: -112.94958 };
+  for (const h of ['#327065mE 4122955mN', '#327065mE, 4122955mN', '#4122955mN 327065mE',
+                   '#12 327065mE 4122955mN', '#12S 327065 4122955', '#327065 4122955']) {
+    const got = await parseWith(page, h);
+    expect({ lat: got.lat, lon: got.lon }, h).toEqual(want);
+  }
+  expect((await parseWith(page, '#327065mE 4122955mN')).note).toContain('zone 12, WGS84');
+  expect((await parseWith(page, '#327065mE 4122955mN')).note).toContain('assumed from the map view');
+  expect((await parseWith(page, '#12S 327065 4122955')).note).not.toContain('assumed');
+  expect(await parseWith(page, '#12 327065mE 4122955mN,Pine Creek')).toMatchObject({ name: 'Pine Creek' });
+  // invariants of the projection itself, independent of any reference point
+  expect(await page.evaluate(() => utmToLatLon(31, 500000, 0))).toEqual([0, 3]);
+  // on the central meridian the northing is purely the meridian arc, so the latitude can be
+  // checked against a numerically integrated arc — an independent route to the same number
+  // (37.2531434756, agreeing to ~0.1 mm) rather than a value copied out of this code
+  const [lat] = await page.evaluate(() => utmToLatLon(12, 500000, 4122955));
+  expect(lat).toBeCloseTo(37.2531435, 6);
+  // southern latitude bands are refused, not silently flipped into the wrong hemisphere
+  expect(await parseWith(page, '#12H 327065 4122955')).toBeNull();
+});
+
 test('parseHash: a malformed percent-escape (a link truncated by a messaging app) reads as invalid, not a crash', async ({ page }) => {
   expect(await parseWith(page, '#37.2,-112.9,100%')).toBeNull();
 });
@@ -118,7 +141,9 @@ test('countEvent: only the fixed vocabulary ever leaves, and never a coordinate'
   });
   expect(sent).toHaveLength(8);
   expect(sent[0]).toMatch(/^https:\/\/drainage\.goatcounter\.com\/count\?p=delineate-UT&e=true&rnd=/);
-  for (const u of sent) expect(u).not.toMatch(/37|112/);
+  // strip the random cache-buster first: it is random, and a 37 landing in it used to fail
+  // this ~1 run in 8 — the promise under test is about the event NAME, not that noise
+  for (const u of sent) expect(u.replace(/&rnd=.*/, '')).not.toMatch(/37|112/);
 });
 
 test('countEvent: the analytics-off choice sends nothing', async ({ page }) => {

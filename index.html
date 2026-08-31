@@ -44,6 +44,10 @@
   #pins-del:enabled { color: #900; }   /* destructive, and there is no undo */
   .pin-del { color: #900; cursor: pointer; border: none; background: none; }
   .pin-ren { color: #555; cursor: pointer; border: none; background: none; }
+  /* unpublished: the leading Ω is the marker, this is just the second cue. The rule below
+     draws the group line where the sort puts the first Ω pin — no JS, no marker row. */
+  #pins li.unpub > a { color: #7a4a00; }
+  #pins li:not(.unpub) + li.unpub { border-top: 1px dashed #ccc; padding-top: 3px; }
   #disclaimer { margin-top: 16px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 0.75rem; color: #666; }
   #basemaps { position: absolute; top: 10px; left: 10px; z-index: 2; background: #fffe;     padding: 6px 10px; border-radius: 4px; font-size: 0.75rem; box-shadow: 0 1px 4px #0003; }
   #basemaps label { display: block; cursor: pointer; }
@@ -79,12 +83,14 @@
   </div>
   <div class="note" style="margin:-6px 0 8px">Canyoneer's second best friend</div>
   <div id="status">Tap a point on the map to see everything that drains to it.</div>
+  <div id="coord-note" class="note"></div>
   <div id="legend"><span class="dot" style="color:#666">●</span> your tap ·
     <span class="dot" style="color:#e08000">●</span> nearest stream ·
     <span class="dot" style="color:#8b2fd0">●</span> forecast spots</div>
   <h2>Drainage area</h2>
   <div id="basin-info" class="note">Nothing delineated yet.</div>
   <div><input id="pin-name" placeholder="name this spot (goes in the share link)" maxlength="60" disabled></div>
+  <div><label class="note" style="cursor:pointer" title="Unpublished: the name gets an Ω, saved pins group these together, and any share link with one asks first"><input type="checkbox" id="chk-unpub" disabled> Ω unpublished</label></div>
   <div>
     <button id="btn-geojson" disabled title="Download GeoJSON">GeoJSON</button>
     <button id="btn-kml" disabled title="Download KML">KML</button>
@@ -142,8 +148,10 @@
       <li>When the NLDI fallback is used, the drainage is delineated from the next downstream confluence instead of the stream point closest to you. This can dramatically inflate the drainage area, because it includes ground below you, not just above.</li>
       <li>The rain chart covers the next 48 hours, hour by hour. Each hour shows the wettest forecast among several spots spread across the basin (NWS data), in the basin's own timezone.</li>
       <li>Active <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener">NWS</a> alerts are checked against the basin's actual shape — including zone-based alerts that carry no geometry of their own (most Flood Watches).</li>
-      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device.</li>
-      <li>Tick saved pins to share or delete several at once. A multi-pin link (`#pins:lat,lon,name;…`) asks the recipient before adding them to their saved pins, skips any they already have, and delineates the first either way.</li>
+      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device. A pasted coordinate is read forgivingly &mdash; extra spaces, a missing comma, degree signs, parentheses &mdash; and the URL is rewritten to the plain form.</li>
+      <li>UTM pastes work too (`327065mE 4122955mN`, or `12S 327065 4122955` with the zone). Without a zone the map's current view supplies one, and the line under the status says which &mdash; a wrong zone lands ~450&nbsp;km sideways. WGS84 is assumed; beta off an old NAD27 quad sits ~200&nbsp;m out.</li>
+      <li>Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) asks the recipient before adding them to their saved pins, skips any they already have, and delineates the first either way.</li>
+      <li>Tick <b>Ω unpublished</b> for a spot that isn't public beta. The Ω lives in the name, so it travels with every share link, export and saved pin; those pins sort together at the bottom of the list, and any share link containing one asks you to confirm before it reaches the clipboard.</li>
       <li>Export the basin as GeoJSON or KML for GaiaGPS, CalTopo, or Google Earth.</li>
       </ul>
 
@@ -433,19 +441,74 @@ map.on('styledata', () => {
 function setData(id, data) { const s = map.getSource(id); if (s) s.setData(data); }
 
 // ---------- hash routing (fragment is attacker-controlled — validate hard) ----------
+// UTM (canyon beta and USGS quads give "327065mE 4122955mN") — inverse transverse Mercator,
+// Snyder USGS PP 1395, WGS84. 20 lines beats a 40 KB proj4 for the one projection anyone
+// pastes. Validated three ways that don't reuse its own output — invariants, a
+// quadrature-integrated meridian arc, and a round-trip through an independent forward
+// series; see "Validation" in DEVELOPMENT.md, asserted in tests/unit.spec.js.
+// NORTHERN HEMISPHERE ONLY: every service behind this app is US-only, and a southern
+// latitude band is rejected rather than quietly placed 10 000 km away.
+function utmToLatLon(zone, E, N) {
+  const a = 6378137, e2 = 6.69437999014e-3, k0 = 0.9996;   // WGS84 / GRS80
+  const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+  const x = E - 500000, mu = (N / k0) / (a * (1 - e2/4 - 3*e2**2/64 - 5*e2**3/256));
+  const p = mu + (3*e1/2 - 27*e1**3/32)*Math.sin(2*mu)      // footpoint latitude
+              + (21*e1**2/16 - 55*e1**4/32)*Math.sin(4*mu)
+              + (151*e1**3/96)*Math.sin(6*mu) + (1097*e1**4/512)*Math.sin(8*mu);
+  const ep2 = e2/(1 - e2), C = ep2*Math.cos(p)**2, T = Math.tan(p)**2;
+  const sin2 = 1 - e2*Math.sin(p)**2;
+  const Nn = a/Math.sqrt(sin2), R = a*(1 - e2)/sin2**1.5, D = x/(Nn*k0);
+  const lat = p - (Nn*Math.tan(p)/R)*(D*D/2 - (5 + 3*T + 10*C - 4*C*C - 9*ep2)*D**4/24
+                  + (61 + 90*T + 298*C + 45*T*T - 252*ep2 - 3*C*C)*D**6/720);
+  const lon = (D - (1 + 2*T + C)*D**3/6
+                 + (5 - 2*C + 28*T - 3*C*C + 8*ep2 + 24*T*T)*D**5/120) / Math.cos(p);
+  return [lat*180/Math.PI, (zone*6 - 183) + lon*180/Math.PI];
+}
+// "327065mE 4122955mN", "12S 327065mE 4122955mN", "327065 4122955", either order when the
+// E/N markers say so. The zone is usually missing from pasted beta — the map view supplies
+// it (last session's centre, or Zion on a first visit), which is right whenever you're
+// looking at the ground the coordinates came from. The note it returns says so out loud:
+// a wrong zone lands ~450 km sideways, and the only defence is telling you which was used.
+function parseUtm(raw) {
+  const m = /^[\s(]*(?:(\d{1,2})\s*([A-Z])?[\s,]+)?(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?[\s,]+(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?\s*\)?(?:\s*,(.*))?$/is.exec(raw);
+  if (!m) return null;
+  const band = m[2]?.toUpperCase();
+  if (band && band < 'N') return null;      // C–M are southern bands; see utmToLatLon
+  let [E, N] = [Number(m[3]), Number(m[5])];
+  if (m[4]?.toUpperCase() === 'N' || m[6]?.toUpperCase() === 'E') [E, N] = [N, E];
+  const guessed = !m[1];
+  const zone = guessed ? Math.floor((map.getCenter().lng + 180) / 6) + 1 : Number(m[1]);
+  if (zone < 1 || zone > 60 || E < 100000 || E > 999999 || N > 9500000) return null;
+  const [lat, lon] = utmToLatLon(zone, E, N);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat: +lat.toFixed(5), lon: +lon.toFixed(5), name: m[7]?.trim().slice(0, 100) || undefined,
+    note: `Read as UTM zone ${zone}${band || ''}, WGS84 → ${lat.toFixed(5)}, ${lon.toFixed(5)}.`
+      + (guessed ? ` Zone ${zone} assumed from the map view.` : '')
+      + ' Beta on an old NAD27 quad lands ~200 m off.' };
+}
 function parseHash() {
   // a link truncated mid-percent-escape (messaging apps do this) must read as
   // invalid, not throw out of the hashchange handler
   let raw;
   try { raw = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
   if (!raw) return null;
-  const parts = raw.split(',');
-  // Number('') is 0, so a blank field would quietly delineate Null Island. Require digits.
-  if (!parts[0]?.trim() || !parts[1]?.trim()) return null;
-  const lat = Number(parts[0]), lon = Number(parts[1]);
+  // Coordinates arrive pasted from everywhere: "37.2, -112.9", "37.2 -112.9",
+  // "(+37.2°, -112.9°)", a unicode minus out of a PDF. Requiring DIGITS in both fields is
+  // also what kills the Number('') is 0 trap — a blank field would delineate Null Island,
+  // and the range check can't catch that because 0,0 is valid. Whitespace separates lat
+  // from lon ONLY: everything after the next comma is the name, which may legitimately
+  // hold spaces and commas ("Right Fork, upper entrance"). Degrees-minutes-seconds is not
+  // accepted — it reads as invalid rather than as some silently wrong decimal.
+  const m = /^[\s(]*([+-]?\d*\.?\d+)\s*°?\s*[,\s]\s*([+-]?\d*\.?\d+)\s*°?\s*\)?(?:\s*,(.*))?$/s
+    .exec(raw.replace(/[\u2212\u2013\u2014]/g, '-'));
+  if (!m) return parseUtm(raw);
+  const lat = Number(m[1]), lon = Number(m[2]);
+  // out of range here is not necessarily junk: a UTM pair matches the decimal shape too
+  // (numbers separated by a space or comma), and 327065 is simply not a latitude
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
-  const name = parts.slice(2).join(',').slice(0, 100) || undefined;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return parseUtm(raw);
+  const name = m[3]?.trim().slice(0, 100) || undefined;
   return { lat, lon, name };
 }
 // Multi-pin share link: #pins:lat,lon,name;lat,lon,name;…
@@ -472,6 +535,32 @@ function parsePinsHash() {
   return out.length ? out : null;
 }
 const pinKey = p => `${p.lat},${p.lon}`;
+// ---------- unpublished spots ----------
+// The marker lives IN the name (a leading Ω, the same sigil convention as deprecated code),
+// not in a separate stored field: it then travels through the fragment, share links,
+// exports, KML titles and the recipient's saved pins for free, and there is no second piece
+// of state that can drift out of sync with the name. Cost: an unnamed spot can't be marked
+// without becoming named — "Ω" alone, which label() renders as "Ω lat, lon".
+const UNPUB = 'Ω';
+const isUnpub = n => (n || '').trimStart().startsWith(UNPUB);
+const bareName = n => isUnpub(n) ? (n || '').trimStart().slice(UNPUB.length).trim() : (n || '');
+// Sharing an unpublished canyon's location is a real-world disclosure, so it can't ride on
+// one stray click. Deliberate sharing still works — this only makes the accidental kind
+// hard. A sandboxed iframe without allow-modals makes confirm() return false with no
+// dialog; the fail direction is "don't copy", which is the right one.
+function okToShareUnpub(names) {
+  if (!names.length) return true;
+  const shown = names.slice(0, 8);
+  return confirm(`This link gives away ${names.length} unpublished spot${names.length === 1 ? '' : 's'}:`
+    + `\n\n${shown.join('\n')}`
+    + (names.length > shown.length ? `\n…and ${names.length - shown.length} more` : '')
+    + `\n\nSend it only to people you'd hand the beta to. Copy the link?`);
+}
+// the name box and the Ω tickbox are two views of one value — always set them together
+function setNameField(v) {
+  $('pin-name').value = v || '';
+  $('chk-unpub').checked = isUnpub(v);
+}
 // Which of `incoming` aren't saved yet — deduped against storage AND against itself, so a
 // link that repeats a coordinate counts it once. Keeping the LOCAL name on a collision is
 // the point: the recipient's own label for a spot they already saved beats the sender's.
@@ -520,13 +609,20 @@ function routeFromHash() {
   }
   const h = parseHash();
   if (!h) {
-    if (location.hash.length > 1) setStatus('Invalid share link — expected #lat,lon,name.', 'err');
+    if (location.hash.length > 1) setStatus('Invalid share link — expected #lat,lon,name, in decimal degrees.', 'err');
     return;
   }
+  // A tolerated paste ("37.2, -112.9") delineates fine but leaves the %20 in the URL, and
+  // Share copies location.href — so canonicalize once, here, where every entry path lands.
+  // replaceState fires no hashchange: no recursion.
+  const canon = `#${h.lat},${h.lon}` + (h.name ? ',' + encodeURIComponent(h.name) : '');
+  if (location.hash !== canon) history.replaceState(null, '', canon);
+  // NOT setStatus: delineate() owns that line and overwrites it within the second
+  $('coord-note').textContent = h.note || '';
   if (cur && !cur.failed && cur.lat === h.lat && cur.lon === h.lon) {
     if (h.name && h.name !== cur.name) {
       cur.name = h.name;
-      $('pin-name').value = h.name;
+      setNameField(h.name);
       $('title').textContent = `Drainage — ${h.name}`;
     }
     return;
@@ -611,9 +707,9 @@ async function delineate(lat, lon, name) {
   $('basin-info').textContent = 'Working…';
   $('forecast').textContent = '—';
   $('alerts').textContent = '—';
-  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name']) $(b).disabled = true;
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'chk-unpub']) $(b).disabled = true;
   $('btn-clear').disabled = false;   // usable mid-delineation — it doubles as cancel
-  $('pin-name').value = name || '';
+  setNameField(name);
   $('title').textContent = name ? `Drainage — ${name}` : 'Drainage';
   setStatus('Finding the nearest mapped stream', 'busy');
   upgradeStreamStats(lat, lon, run);   // in parallel — needs only the tap, not the comid
@@ -692,7 +788,7 @@ function renderBasin(basin, sourceLabel) {
   renderBasinInfo();
   map.fitBounds(turf.bbox(basin), { padding: 40 });
   renderForecastLinks(basin);
-  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name']) $(b).disabled = false;
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'chk-unpub']) $(b).disabled = false;
   // ONE event per tap, not per render. NLDI and StreamStats both call renderBasin for the
   // same tap (that is the whole parallel-upgrade design), so counting here without a guard
   // double-counted every lookup where both paths succeeded — i.e. most of them. `cur` is
@@ -1255,14 +1351,19 @@ $('btn-clear').onclick = () => {
     $(id).textContent = txt;
   }
   $('alerts-link').textContent = '';
+  $('coord-note').textContent = '';
   $('no-alerts-note').style.display = '';
-  $('pin-name').value = '';
-  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'btn-clear']) $(b).disabled = true;
+  setNameField('');
+  for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'chk-unpub', 'btn-clear']) $(b).disabled = true;
   setStatus('Tap a point on the map to see everything that drains to it.');
 };
 
 $('btn-share').onclick = async () => {
   flushName();
+  if (!okToShareUnpub(isUnpub(cur.name) ? [cur.name] : [])) {
+    setStatus('Link not copied.');
+    return;
+  }
   countEvent('share');
   try { await navigator.clipboard.writeText(location.href); setStatus('Share link copied.'); }
   catch { setStatus('Copy this link: ' + location.href); } // no prompt() — blocked in embedded webviews
@@ -1396,25 +1497,44 @@ function applyName() {
 }
 let nameTimer;
 $('pin-name').oninput = () => { clearTimeout(nameTimer); nameTimer = setTimeout(applyName, 300); };
+// the tickbox only rewrites the name box; applyName does the rest, undebounced — the title,
+// the URL and the share link must agree with the box the instant it's ticked
+$('chk-unpub').onchange = () => {
+  const base = bareName($('pin-name').value);
+  $('pin-name').value = ($('chk-unpub').checked ? `${UNPUB} ${base}` : base).trim().slice(0, 60);
+  flushName();
+};
 // a rename typed <300 ms before Share/export/pin must land before the action reads it
 function flushName() { clearTimeout(nameTimer); applyName(); }
 $('btn-pin').onclick = () => {
   flushName();
-  // re-pinning a saved spot updates its name instead of duplicating the row
-  const pins = (lsGet('pins') || []).filter(p => pinKey(p) !== pinKey(cur));
+  // one row per spot AND one per name: re-pinning a saved spot updates its name, and
+  // saving a name that's already taken moves that name to the new spot (case-insensitive
+  // — "Keeper" and "keeper" read as the same pin in a list sorted case-insensitively)
+  const same = p => pinKey(p) === pinKey(cur)
+    || (cur.name && p.name && p.name.toLowerCase() === cur.name.toLowerCase());
+  const pins = (lsGet('pins') || []).filter(p => !same(p));
   pins.push({ lat: cur.lat, lon: cur.lon, name: cur.name });
   lsSet('pins', pins);
   countEvent('pin');
   renderPins();
 };
+let pinAnchor = null;    // declared above renderPins: its first call beats the handler below
 function renderPins() {
+  pinAnchor = null;
   const ul = $('pins');
   ul.textContent = '';
   const pins = lsGet('pins') || [];
-  const label = p => p.name || `${p.lat}, ${p.lon}`;
-  pins.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base' }));
+  // a spot marked before it was named has "Ω" for a name — show the coordinates after it
+  const label = p => bareName(p.name) ? p.name : (isUnpub(p.name) ? `${UNPUB} ` : '') + `${p.lat}, ${p.lon}`;
+  const sortKey = p => bareName(label(p));
+  // unpublished spots sort as one block at the bottom, alphabetical WITHIN each block:
+  // relying on where the collator happens to put Ω would be luck, not a grouping
+  pins.sort((a, b) => (isUnpub(a.name) ? 1 : 0) - (isUnpub(b.name) ? 1 : 0)
+    || sortKey(a).localeCompare(sortKey(b), undefined, { sensitivity: 'base' }));
   pins.forEach((p, i) => {
     const li = document.createElement('li');
+    if (isUnpub(p.name)) { li.className = 'unpub'; li.title = 'Unpublished — share links ask first'; }
     const a = document.createElement('a');
     a.href = `#${p.lat},${p.lon}` + (p.name ? ',' + encodeURIComponent(p.name) : '');
     a.textContent = label(p);
@@ -1464,6 +1584,21 @@ function syncPinShare() {
   }
 }
 $('pins').onchange = syncPinShare;      // delegated: survives every renderPins()
+// shift-click takes the whole run from the last box you clicked, like a file list. The
+// anchor is an INDEX, not an element: renderPins() rebuilds every checkbox from scratch
+// (and clears the ticks), so renderPins drops the anchor too. click, not change: only the
+// click event carries shiftKey, and the box is already toggled by the time it fires.
+$('pins').onclick = e => {
+  const cb = e.target;
+  if (!cb.classList.contains('pin-cb')) return;
+  const boxes = pinBoxes(), i = boxes.indexOf(cb);
+  if (e.shiftKey && pinAnchor !== null && pinAnchor < boxes.length) {
+    const [lo, hi] = pinAnchor < i ? [pinAnchor, i] : [i, pinAnchor];
+    for (let k = lo; k <= hi; k++) boxes[k].checked = cb.checked;
+    syncPinShare();
+  }
+  pinAnchor = i;
+};
 $('pins-all').onclick = () => {
   const cbs = pinBoxes(), allOn = cbs.every(c => c.checked);
   for (const c of cbs) c.checked = !allOn;
@@ -1472,6 +1607,10 @@ $('pins-all').onclick = () => {
 $('pins-share').onclick = async () => {
   const sel = pinBoxes().filter(c => c.checked);
   if (!sel.length) return;
+  if (!okToShareUnpub(sel.map(c => c.dataset.name).filter(isUnpub))) {
+    $('pins-msg').textContent = 'Link not copied.';
+    return;
+  }
   // origin+pathname, not location.href: the current fragment is one drainage and must not
   // leak into a link that is about a different set of them
   const link = location.origin + location.pathname + '#pins:' + sel.map(c =>
