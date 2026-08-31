@@ -26,6 +26,50 @@
     #panel { top: var(--maph); left: 0; width: auto; border-left: none; border-top: 1px solid #ccc; }
     #divider { top: var(--maph); bottom: auto; left: 0; right: 0; width: auto; height: 24px;      margin: -12px 0 0 0; cursor: row-resize; }
   }
+  /* ?locked — the app pinned to one pour point (a beta site embedding one canyon).
+     Panel and divider gone, map full-bleed. The safety-critical text moves into #lockbar,
+     a card floating above the MapLibre attribution row (which must stay visible: OSM and
+     OpenTopoMap require it). These rules come AFTER the media query on purpose — the
+     mobile rule reshapes #map and this has to win at every width. */
+  html.locked #panel, html.locked #divider { display: none; }
+  html.locked #map { inset: 0; cursor: default; }
+  /* the pane goes on any edge (?pane=). Every variant reserves the bottom 26px for the
+     MapLibre attribution/scale row. The size cap lives on the STACK, not the bar, so the
+     bar can fill a tall left/right column and still scroll. */
+  #lockstack { position: absolute; z-index: 3; display: flex; flex-direction: column; }
+  html.pane-bottom #lockstack { left: 8px; right: 8px; bottom: 26px; max-height: 45%; }
+  html.pane-top    #lockstack { left: 8px; right: 8px; top: 8px;     max-height: 45%; }
+  html.pane-left   #lockstack { left: 8px;  top: 8px; bottom: 26px; width: min(340px, 45%); }
+  html.pane-right  #lockstack { right: 8px; top: 8px; bottom: 26px; width: min(340px, 45%); }
+  /* min-height:0 — without it a flex child refuses to shrink below its content and the
+     bar overflows the stack instead of scrolling inside it */
+  #lockbar { background: #fff; border-radius: 6px; padding: 6px 10px; min-height: 0;
+             overflow-y: auto; box-shadow: 0 1px 6px #0004; font-size: 0.8125rem; }
+  /* the pane floats OVER the map's own controls, so push whichever ones it landed on clear.
+     --pane-w/h are measured and set by the same code that pads the fit (see fitPad). */
+  html.pane-top   #basemaps { top: calc(18px + var(--pane-h, 0px)); }
+  html.pane-top   .maplibregl-ctrl-top-right { margin-top: var(--pane-h, 0px); }
+  html.pane-left  #basemaps { left: calc(18px + var(--pane-w, 0px)); }
+  html.pane-right .maplibregl-ctrl-top-right { margin-right: calc(8px + var(--pane-w, 0px)); }
+  #lockbar h2 { margin: 8px 0 2px; }
+  /* the chart is one viewBox scaled to its container — at full embed width it blows up to
+     cartoon size, so cap it near the panel width it was drawn for */
+  #lockbar #forecast svg { max-width: 420px; }
+  #lockbar > :first-child { margin-top: 0; }
+  /* forecast=0&alerts=0 with nothing wrong → an empty white strip. Suppress it. The h2s are
+     only in the bar when their section is on; .err is the status line, .warn a basin caveat.
+     Browsers without :has() just keep the empty strip — cosmetic, not a failure. */
+  #lockbar:not(:has(h2, .err, .warn)) { display: none; }
+  /* the status line is the only place a failed delineation announces itself — but its
+     idle chatter ("Tap a point…") is wrong here, since tapping does nothing */
+  html.locked #status:not(.err) { display: none; }
+  /* of the basin lines, keep the ⚠ ones: area and "zoom in and tap a blue line" are
+     noise (or a lie) in a mode with no tapping */
+  html.locked #basin-info > :not(.warn) { display: none; }
+  /* max-width + wrapping are for the popup-blocked fallback, where the label becomes a URL */
+  #openfull { display: block; width: max-content; max-width: 100%; overflow-wrap: anywhere;
+              margin: 0 0 6px auto; background: #fffe;
+              padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; box-shadow: 0 1px 4px #0003; }
   h1 { font-size: 1rem; margin: 0 0 8px; }
   h2 { font-size: 0.8125rem; margin: 14px 0 4px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
   #status { padding: 6px 8px; background: #eef; border-radius: 4px; min-height: 1.4em; }
@@ -98,9 +142,9 @@
     <button id="btn-pin" disabled title="Save pin" aria-label="Save pin">📌</button>
     <button id="btn-clear" disabled title="Clear the pour point and start over" aria-label="Clear">✕</button>
   </div>
-  <h2>Rain over this drainage — next 48 h</h2>
+  <h2 id="h-forecast">Rain over this drainage — next 48 h</h2>
   <div id="forecast" class="note">Delineate a drainage to get its forecast.</div>
-  <h2>Active alerts touching this drainage</h2>
+  <h2 id="h-alerts">Active alerts touching this drainage</h2>
   <div id="alerts" class="note">Delineate a drainage to check alerts.</div>
   <div id="alerts-link" class="note"></div>
   <h2>Saved pins</h2>
@@ -148,8 +192,7 @@
       <li>When the NLDI fallback is used, the drainage is delineated from the next downstream confluence instead of the stream point closest to you. This can dramatically inflate the drainage area, because it includes ground below you, not just above.</li>
       <li>The rain chart covers the next 48 hours, hour by hour. Each hour shows the wettest forecast among several spots spread across the basin (NWS data), in the basin's own timezone.</li>
       <li>Active <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener">NWS</a> alerts are checked against the basin's actual shape — including zone-based alerts that carry no geometry of their own (most Flood Watches).</li>
-      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device. A pasted coordinate is read forgivingly &mdash; extra spaces, a missing comma, degree signs, parentheses &mdash; and the URL is rewritten to the plain form.</li>
-      <li>UTM pastes work too (`327065mE 4122955mN`, or `12S 327065 4122955` with the zone). Without a zone the map's current view supplies one, and the line under the status says which &mdash; a wrong zone lands ~450&nbsp;km sideways. WGS84 is assumed; beta off an old NAD27 quad sits ~200&nbsp;m out.</li>
+      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device.</li>
       <li>Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) asks the recipient before adding them to their saved pins, skips any they already have, and delineates the first either way.</li>
       <li>Tick <b>Ω unpublished</b> for a spot that isn't public beta. The Ω lives in the name, so it travels with every share link, export and saved pin; those pins sort together at the bottom of the list, and any share link containing one asks you to confirm before it reaches the clipboard.</li>
       <li>Export the basin as GeoJSON or KML for GaiaGPS, CalTopo, or Google Earth.</li>
@@ -160,11 +203,11 @@
         <li>Your tap coordinates go to USGS, and points inside the drainage go to NWS. That is how the drainage and the forecast get calculated. <b>None of it comes to me.</b></li>
         <li>I don't collect anything personal &ndash; not your location, and not which canyon you're looking at. The exceptions: which US state a drainage is in, and the domain name of the page that linked to or embedded the app.</li>
         <li>Share links put the coordinates after a <code>#</code>, which browsers never send to any server.</li>
-        <li>Basic anonymized usage counting is on by default and can be switched off below. It records that a lookup, export, share or pin happened, when, the domain name of the referring page (never its path), and, for a lookup only, which US state. Nothing else, and never a coordinate.</li>
+        <li>Basic anonymized usage counting is on by default and can be switched off below. It records that a lookup, export, share, pin, embed load, or click through from an embed happened, when, the domain name of the referring page (never its path), and, for a lookup only, which US state. Nothing else, and never a coordinate.</li>
         <li>Counting uses <a href="https://www.goatcounter.com/help/privacy" target="_blank" rel="noopener">GoatCounter</a>, which is cookieless. As with any web request it receives an IP address and browser string; it hashes both with a salt that rotates every 8 hours, keeps them in memory only, and never shows them to me.</li>
         <li>Feedback is sent only using <a href="https://web3forms.com/privacy" target="_blank" rel="noopener">Web3Forms</a> when you type a note and press Send. It carries your rating, your text, and the drainage you were looking at (only if you leave that box ticked); the exact values are shown to you before you send.</li>
       </ul>
-      <p><label style="cursor:pointer"><input type="checkbox" id="chk-count"> Enable analytics</label>
+      <p><label style="cursor:pointer"><input type="checkbox" id="chk-count"> Enable usage counting analytics</label>
       <span id="count-state"></span></p>
       <p>Open source, MIT licensed &mdash;
         <a href="https://github.com/mislavkos/drainage" target="_blank" rel="noopener">github.com/mislavkos/drainage</a></p>
@@ -180,6 +223,29 @@ const SS = 'https://streamstats.usgs.gov';
 const SS_GIS = 'https://gis.streamstats.usgs.gov/arcgis/rest/services/stateServices';
 const NWS = 'https://api.weather.gov';
 const $ = id => document.getElementById(id);
+
+// ---------- locked mode (?locked) ----------
+// The pour point is whatever the fragment says and nothing can change it: map clicks are
+// inert, the text pane is gone. Built for a beta site (ropewiki and friends) that embeds
+// one canyon's drainage in that canyon's own page, where re-tapping the map only produces
+// a drainage for some other canyon. A plain iframe with no query string keeps the full app
+// — that is the no-param case and it still works, so this flag is NOT called "embed".
+// Sub-flags default ON: an embedder who writes only `?locked` gets the rain, the alerts and
+// the way back to the full app, and has to switch each off deliberately.
+const qs = new URLSearchParams(location.search);
+const qflag = (k, dflt) => qs.has(k) ? qs.get(k) !== '0' : dflt;
+const locked = qflag('locked', false);
+// which edge the text pane takes. A wide, short embed wants a vertical strip; anything
+// unrecognised (the query string is the embedder's, and typos happen) falls back to bottom.
+const PANES = ['top', 'bottom', 'left', 'right'];
+const pane = PANES.includes(qs.get('pane')) ? qs.get('pane') : 'bottom';
+// set BEFORE the map is constructed — MapLibre sizes its canvas once, and #map is
+// full-width only after this class lands
+if (locked) document.documentElement.classList.add('locked', 'pane-' + pane);
+// no crosshair when a click selects nothing
+const CURSOR = locked ? '' : 'crosshair';
+const showForecast = !locked || qflag('forecast', true);
+const showAlerts   = !locked || qflag('alerts', true);
 
 // ---------- small utils ----------
 // github.io project pages share ONE localStorage origin across all of this account's
@@ -284,13 +350,16 @@ if (!lastCenter && navigator.geolocation) {
     () => {}, { maximumAge: 600000 });
 }
 map.addControl(new maplibregl.NavigationControl());
+// `originalEvent` is present only on user-driven moves — our own fitBounds never sets this
+let userPanned = false;
+map.on('movestart', e => { if (e.originalEvent) userPanned = true; });
 // MapLibre's own ResizeObserver misses late layout changes in some embedded webviews
 window.addEventListener('resize', () => map.resize());
 map.once('idle', () => map.resize());
 const scaleCtl = new maplibregl.ScaleControl({ unit: isUS() ? 'imperial' : 'metric' });
 map.addControl(scaleCtl);
 // a click sets the pour point — say so; MapLibre's canvas style overrides the #map CSS rule
-map.getCanvas().style.cursor = 'crosshair';
+map.getCanvas().style.cursor = CURSOR;
 
 // drag the divider to rebalance map vs panel (width on desktop, height on phones)
 {
@@ -403,6 +472,8 @@ async function refreshStreamGrid() {
 }
 map.on('moveend', refreshStreamGrid);
 map.on('moveend', () => {
+  // a canyon page embedded in someone's browsing must not move the map in their own app
+  if (locked) return;
   const c = map.getCenter();
   lsSet('lastCenter', [c.lng, c.lat]);
   lsSet('lastZoom', map.getZoom());
@@ -640,6 +711,7 @@ window.addEventListener('hashchange', routeFromHash);
 const markerAt = pt => map.getLayer('points') &&
   map.queryRenderedFeatures(pt, { layers: ['points'] }).some(f => f.properties.role);
 map.on('click', e => {
+  if (locked) return;   // the pour point came from the URL and stays there
   if (map.getLayer('fcast') && map.queryRenderedFeatures(e.point, { layers: ['fcast'] }).length) return;
   if (markerAt(e.point)) return;   // the tap and pour-point markers open forecast popups instead
   const ll = e.lngLat.wrap();   // a click on a wrapped world copy must stay in [-180,180]
@@ -671,11 +743,11 @@ map.on('click', 'points', e => {
     `https://forecast.weather.gov/MapClick.php?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`);
 });
 map.on('mouseenter', 'fcast', () => { map.getCanvas().style.cursor = 'pointer'; });
-map.on('mouseleave', 'fcast', () => { map.getCanvas().style.cursor = 'crosshair'; });
+map.on('mouseleave', 'fcast', () => { map.getCanvas().style.cursor = CURSOR; });
 map.on('mousemove', 'points', e => {
   if (e.features.some(f => f.properties.role)) map.getCanvas().style.cursor = 'pointer';
 });
-map.on('mouseleave', 'points', () => { map.getCanvas().style.cursor = 'crosshair'; });
+map.on('mouseleave', 'points', () => { map.getCanvas().style.cursor = CURSOR; });
 
 // keep the previous drainage visible but dimmed while a new one loads — less jarring
 // than a blank map, and the back button restores the old one from cache anyway
@@ -786,7 +858,7 @@ function renderBasin(basin, sourceLabel) {
   cur.areaKm2 = turf.area(basin) / 1e6;
   cur.sourceLabel = sourceLabel;
   renderBasinInfo();
-  map.fitBounds(turf.bbox(basin), { padding: 40 });
+  fitBasin();
   renderForecastLinks(basin);
   for (const b of ['btn-geojson', 'btn-kml', 'btn-share', 'btn-pin', 'pin-name', 'chk-unpub']) $(b).disabled = false;
   // ONE event per tap, not per render. NLDI and StreamStats both call renderBasin for the
@@ -800,6 +872,30 @@ function renderBasin(basin, sourceLabel) {
       .then(st => countEvent('delineate-' + (st || 'unknownstate')))
       .catch(() => countEvent('delineate-unknownstate'));
   }
+}
+
+// The pane floats over the map, so fitting the basin to the whole viewport hides part of it
+// behind the text. fitBounds takes per-side padding, so the fix is to pad the pane's own
+// side by the pane's measured size — no custom centering maths.
+const PANE_AXIS = { top: 'height', bottom: 'height', left: 'width', right: 'width' };
+function fitPad() {
+  const el = $('lockstack');
+  if (!el) return 40;
+  const r = el.getBoundingClientRect();
+  // publish the measurement for the CSS that shifts the basemap picker and zoom control
+  document.documentElement.style.setProperty('--pane-h', r.height + 'px');
+  document.documentElement.style.setProperty('--pane-w', r.width + 'px');
+  const p = { top: 40, bottom: 40, left: 40, right: 40 };
+  const vertical = PANE_AXIS[pane] === 'height';
+  const dim = vertical ? map.getCanvas().clientHeight : map.getCanvas().clientWidth;
+  // padding that meets or exceeds the map leaves fitBounds nothing to fit into — cap it,
+  // and accept some overlap on an embed too small to hold both
+  p[pane] += vertical ? r.height : r.width;
+  p[pane] = Math.min(p[pane], dim * 0.6);
+  return p;
+}
+function fitBasin() {
+  if (cur && cur.basin) map.fitBounds(turf.bbox(cur.basin), { padding: fitPad() });
 }
 
 // info panel only — separate so the units toggle can re-render without moving the map
@@ -863,6 +959,15 @@ function renderBasinInfo() {
     const w = document.createElement('div');
     w.className = 'warn';
     w.textContent = `⚠ The orange dot sits near the top of its stream segment, and USGS returns the whole segment's drainage — much of this shaded area is DOWNSTREAM of the dot. Rain checks over the extra area err safe, but the area draining to the dot itself is smaller.`;
+    info.appendChild(w);
+  }
+  // In the full app this caveat is the status line ("…can include area past the orange
+  // point"), which locked mode hides. Losing it there would leave a beta page showing a
+  // basin several times too big with nothing saying so.
+  if (locked && !cur.exact) {
+    const w = document.createElement('div');
+    w.className = 'warn';
+    w.textContent = `⚠ Approximate: this is the whole nearest stream segment's catchment, so it can extend past the orange point and read much larger than what actually drains to it.`;
     info.appendChild(w);
   }
   if (cur.ssDown && !cur.exact && !cur.split) {
@@ -958,6 +1063,7 @@ async function upgradeSplit(lat, lon, reachBasin, run) {
 
 // ---------- forecast links ----------
 function renderForecastLinks(basin) {
+  if (!showForecast) return;   // the violet spots are forecast UI too, and this is what fetches it
   const pour = cur.snap;
   const spots = [
     { label: 'Nearest stream (where you are)', c: pour },
@@ -1172,6 +1278,7 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz) {
 // link to the local NWS office's watch/warning list — a page that exists even when
 // empty, so "no alerts" here can be checked against the source
 async function renderHazardsLink(snap) {
+  if (!showAlerts) return;
   const el = $('alerts-link');
   el.textContent = '';
   try {
@@ -1212,6 +1319,7 @@ async function getZoneGeometry(zurl) {
 }
 
 async function checkAlerts(basin, run) {
+  if (!showAlerts) return;
   const seq = ++alSeq;
   const el = $('alerts');
   el.textContent = 'Checking alerts…';
@@ -1379,7 +1487,7 @@ $('btn-share').onclick = async () => {
 // event whose name carries more than a US state, silently makes the Privacy text false.
 const GC_SITE = 'drainage';                // goatcounter has no key: the subdomain IS the site id
 const W3F_KEY = 'ae400d2c-c024-4eca-b74f-6a5ecd1fe876';   // web3forms; public by design, per their docs
-const EVENT_OK = /^(delineate-(?:[A-Z]{2}|unknownstate)|export-(?:geojson|kml)|share|pin|feedback-(?:up|down))$/;
+const EVENT_OK = /^(delineate-(?:[A-Z]{2}|unknownstate)|export-(?:geojson|kml)|share|pin|locked|open|feedback-(?:up|down))$/;
 // Who linked to or embedded the app, reduced to a bare origin. Inside an iframe
 // document.referrer is the PARENT page, which is the embed-detection we want. Origin only,
 // never the path: a linking URL can itself be private (an internal wiki page, a club's
@@ -1630,6 +1738,70 @@ $('pins-del').onclick = () => {
   $('pins-msg').textContent = `Deleted ${doomed.size} pin${doomed.size === 1 ? '' : 's'}.`;
 };
 renderPins();
+
+// ---------- locked mode: reassemble what survives the hidden panel ----------
+// Every element MOVES rather than being cloned or re-rendered — delineate(), renderForecast()
+// and checkAlerts() all write into these by id, so reparenting keeps all of that untouched.
+if (locked) {
+  // once per locked load, and NOT derived from anything else: `delineate-XX` records that a
+  // lookup happened and says nothing about the mode, and `open` is a lower bound with an
+  // unknown floor — it is zero forever under `open=0`, and most readers never click it.
+  // Carries strictly less than `delineate-XX` already does (no state, no coordinate).
+  countEvent('locked');
+  const stack = document.createElement('div');
+  stack.id = 'lockstack';
+  if (qflag('open', true)) {
+    const a = document.createElement('a');
+    a.id = 'openfull';
+    a.target = '_blank';
+    a.rel = 'noopener';
+    // NOT location.href: the query string is what put us in locked mode, so drop it and
+    // keep the fragment. A not-yet-canonicalized fragment ("#37.2, -112.9") is fine — the
+    // full app re-parses it forgivingly and rewrites it on arrival.
+    a.href = location.origin + location.pathname + location.hash;
+    a.textContent = 'Open in Drainage ↗';
+    a.title = 'Open this point in the full app, where you can tap the map, export, and save pins';
+    // A sandboxed iframe without allow-popups kills target=_blank silently: no error, no
+    // event, the link just does nothing — and a dead link is worse than no link. That flag
+    // cannot be detected up front (an opaque origin gives away `sandbox` only when
+    // allow-same-origin is ALSO missing; with it the frame looks entirely normal from in
+    // here), so don't try — take the click and let window.open returning null BE the
+    // detection. A user-gesture window.open passes ordinary popup blockers, so the normal
+    // path is unchanged; modified clicks fall through to the browser's own new-tab handling.
+    a.onclick = e => {
+      // before the modifier guard: a cmd-click is the same intent, and this is the only
+      // signal for whether an embed actually feeds the full app. Fires even when the popup
+      // is blocked below — the reader still asked to leave.
+      countEvent('open');
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+      e.preventDefault();
+      if (window.open(a.href, '_blank', 'noopener')) return;
+      // href is left intact — right-click → copy link address still works, and clicking
+      // again retries in case it was a blocker rather than a sandbox
+      a.textContent = 'Copy this link: ' + a.href;   // same fallback the share button uses
+    };
+    stack.appendChild(a);
+  }
+  const bar = document.createElement('div');
+  bar.id = 'lockbar';
+  // #status only ever shows an error here (CSS), #basin-info only its ⚠ lines
+  bar.append($('status'), $('basin-info'));
+  // alerts ABOVE the chart, the reverse of the panel's order: the bar scrolls, and a live
+  // Flash Flood Warning must not sit below 48 hours of chart the reader has to scroll past
+  if (showAlerts) bar.append($('h-alerts'), $('alerts'), $('alerts-link'));
+  if (showForecast) bar.append($('h-forecast'), $('forecast'));
+  stack.appendChild(bar);
+  document.body.appendChild(stack);
+  // The forecast and alerts arrive seconds after renderBasin() fits the map, so the first
+  // fit pads for a pane that has not grown yet. Re-fit whenever the pane changes size —
+  // content landing, or the frame being resized — but never once the reader has taken the
+  // map themselves; their pan is not ours to undo.
+  new ResizeObserver(() => { if (!userPanned) fitBasin(); }).observe(stack);
+  // an embed with no fragment is a broken embed, and the map would just sit there blank.
+  // routeFromHash() returns silently on an empty hash, so nothing overwrites this.
+  if (location.hash.length <= 1)
+    setStatus('This embed has no pour point — its URL needs a #lat,lon fragment.', 'err');
+}
 </script>
 </body>
 </html>

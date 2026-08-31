@@ -53,6 +53,15 @@ the app looks fine.
   saved-pin sort compares `bareName` so the Ω block is alphabetical inside itself. The
   share hurdle is a `confirm()` in front of *both* share paths (`okToShareUnpub`) — the
   point is only to stop the accidental share, never to prevent a deliberate one.
+- **"About this app" stays short. A new feature does not automatically earn a bullet**
+  (2026-08-31 — the pasted-coordinate and UTM bullets were added with those features and
+  removed by the user shortly after; the features stayed). That panel is read by someone
+  at a trailhead deciding whether to trust a shaded polygon, not by someone auditing the
+  release notes, and every bullet added dilutes the ones that matter. A bullet earns its
+  place only if *not* knowing it would make a reader misread the map or miss a safety
+  caveat. Input tolerances, keyboard tricks, URL parameters and other how-to detail go in
+  the README instead — it has room and the right audience. When adding a feature, the
+  default is **no About change**; adding one is the decision that needs justifying.
 - **Pasted coordinates are read forgivingly, then the URL is rewritten** (2026-08-31).
   `parseHash` accepts spaces for the comma, degree signs, parens, a unicode minus, and
   falls through to `parseUtm` when the pair is out of lat/lon range (327065 is not a
@@ -314,8 +323,17 @@ The Privacy bullets tell the user "Nothing else, and never a coordinate". Since 
 in-app vocabulary disclosure was removed (2026-08-31, deliberately — the section is much
 shorter for it), **the `EVENT_OK` regex is the whole guarantee**, now also pinned by a
 test. Whole vocabulary: `delineate-XX` / `delineate-unknownstate`, `export-geojson`,
-`export-kml`, `share`, `pin`, `feedback-up`, `feedback-down`. Nothing may interpolate a
-coordinate; when `stateAt()` fails the label is `delineate-unknownstate`.
+`export-kml`, `share`, `pin`, `locked`, `open`, `feedback-up`, `feedback-down`. Nothing
+may interpolate a coordinate; when `stateAt()` fails the label is `delineate-unknownstate`.
+Adding a label means editing the Privacy bullet in `index.html` AND the README line that
+mirrors it — the promise *enumerates* the event types, so a new label silently makes both
+false. `locked` and `open` (2026-08-31) were added that way.
+
+`locked` (fires once per locked load) and `open` (the click through to the full app) are
+**both** needed and neither derives from the other: `delineate-XX` records that a lookup
+happened and nothing about the mode, and `open` is a lower bound with an unknown floor —
+permanently zero under `open=0`, and most readers never click it. `locked` carries
+strictly less than `delineate-XX` already does: no state, no coordinate.
 
 - **We do NOT load GoatCounter's `count.js`, on purpose.** It is a CDN script (this app
   vendors everything) and it adds fields of its own — observed sending
@@ -500,6 +518,79 @@ Console errors seen only in a dev browser with extensions; don't hunt for these:
   public domain).
 - Embedding: works in a plain iframe (no anti-framing headers, deliberately). Snippet
   in the README, including how embedders suppress the referrer-origin counting.
+
+### Locked mode (`?locked`)
+
+Added 2026-08-31 for beta sites (ropewiki and the like) that embed one canyon's drainage
+in that canyon's own page. There, a re-tappable map is a liability: every other point
+draws a *different* canyon.
+
+- **The pour point stays in the fragment.** `?locked#lat,lon,name` — no new coordinate
+  parser, no second code path. Every share-link tolerance (pasted decimals, UTM,
+  canonicalization) comes along free, and `#pins:` links still work if one is passed.
+- **`locked`, not `embed`.** A plain iframe with no query string keeps the full app, and
+  that is a supported configuration — so the flag names what it does (one fixed pour
+  point) rather than where it runs.
+- **Sub-flags default ON** (`forecast`, `alerts`, `open`; `=0` switches one off). An
+  embedder who writes only `?locked` gets the safety-relevant content. Opt-in defaults
+  would mean a forgotten `forecast=1` silently ships a map with no rain data.
+- **Everything MOVES, nothing is re-rendered.** The bootstrap at the bottom of the script
+  reparents `#status`, `#basin-info`, the two `<h2>`s and `#forecast` / `#alerts` /
+  `#alerts-link` into `#lockbar`. `delineate()`, `renderForecast()` and `checkAlerts()`
+  address them by id and never learned this mode exists. Do not replace this with a
+  second rendering path.
+- **Alerts sit ABOVE the chart**, the reverse of the panel's order: the bar is height-
+  capped and scrolls, and a live Flash Flood Warning must not be below 48 h of chart.
+- **Two things locked mode cannot hide**, both for the same reason — a beta page is read
+  as authoritative and a silent wrong answer is the dangerous one:
+  - the `.err` status line, so a failed delineation still says UNKNOWN-not-empty. CSS
+    hides `#status:not(.err)`; the idle "Tap a point…" would be a lie here anyway.
+  - the ⚠ lines from `renderBasinInfo()` (CSS keeps `#basin-info > .warn`, drops the
+    rest). The NLDI-fallback caveat normally lives in the *status* line, which this mode
+    hides — so `renderBasinInfo()` grows a `locked && !cur.exact` warn to carry it. That
+    branch exists ONLY because the status line is gone; don't "simplify" it away.
+- **Off means no request.** `renderForecastLinks()`, `checkAlerts()` and
+  `renderHazardsLink()` early-return on their flag, so a switched-off section costs NWS
+  nothing. `moveend` skips the `lastCenter`/`lastZoom` writes: browsing a wiki full of
+  embeds must not move the reader's map in their own copy.
+- **The "Open in Drainage" link degrades, it does not detect.** A sandboxed iframe
+  without `allow-popups` kills `target="_blank"` silently — no error, no event, the link
+  just does nothing. That flag is *not* detectable up front: an opaque origin
+  (`window.origin === 'null'`) betrays `sandbox` only when `allow-same-origin` is also
+  missing, and with it the frame looks entirely normal from inside. A speculative
+  `window.open()` probe would flash a real popup for everyone who is *not* blocked. So
+  the click handler takes the click and treats `window.open` returning null as the
+  detection, falling back to "Copy this link: <url>" (the same fallback the share button
+  uses when the clipboard is refused). `href` is left intact so right-click → copy still
+  works. Do not replace this with sandbox sniffing.
+- **`?pane=top|bottom|left|right`** (default `bottom`, added 2026-09-01). A wide, short
+  embed wants a vertical strip, not a horizontal band. Four CSS rules on
+  `html.pane-<edge> #lockstack`; the size cap moved from `#lockbar` to the stack so a
+  left/right column can fill the height and still scroll inside (`#lockbar` needs
+  `min-height: 0` or the flex child refuses to shrink and overflows instead).
+- **The fit pads around the pane; it does not centre by hand.** `fitBounds` already takes
+  per-side padding, so `fitPad()` returns `{top,bottom,left,right}` with the pane's own
+  side raised by its measured size — that is the whole feature. Padding at or above the
+  map's own dimension leaves `fitBounds` nothing to fit into, so the padded side is capped
+  at 60% of that axis; on an embed too small to hold both, some overlap is the accepted
+  outcome. The same function publishes `--pane-w` / `--pane-h`, which the CSS uses to push
+  `#basemaps` and the zoom control clear of whichever edge the pane took.
+- **The re-fit is a `ResizeObserver`, guarded by `userPanned`.** Forecast and alerts land
+  seconds after `renderBasin()` fits, so the first fit pads for a pane that has not grown
+  yet; observing the stack catches that and frame resizes too. `userPanned` is set from
+  `movestart` only when `e.originalEvent` exists — our own `fitBounds` never sets it, so
+  the map stops re-fitting the instant a reader takes it, and their pan is never undone.
+  A test drives a real mouse drag for this; a programmatic `panBy` carries no
+  `originalEvent` and would pass the test while proving nothing.
+- **`#lockstack` sits at `bottom: 26px`, not 0** — the MapLibre attribution and scale row
+  is below it and has to stay visible (OSM and OpenTopoMap require attribution).
+- The chart SVG is one `viewBox` scaled to its container; at full embed width it renders
+  cartoon-sized, hence `#lockbar #forecast svg { max-width: 420px }`.
+- `#lockbar:not(:has(h2, .err, .warn))` suppresses the empty white strip when everything
+  is off and nothing is wrong. Browsers without `:has()` drop the rule and keep the strip
+  — cosmetic only.
+- Covered by `tests/locked.spec.js`, including the two must-not-hide cases and a
+  regression test that the no-query-string full app is untouched.
 
 ## Parked — decided against or deferred, don't re-derive casually
 

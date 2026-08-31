@@ -134,12 +134,12 @@ test('countEvent: only the fixed vocabulary ever leaves, and never a coordinate'
     window.Image = class { set src(v) { out.push(v); } };
     for (const name of [
       'delineate-UT', 'delineate-unknownstate', 'export-geojson', 'export-kml',
-      'share', 'pin', 'feedback-up', 'feedback-down',          // the whole allowed vocabulary
+      'share', 'pin', 'locked', 'open', 'feedback-up', 'feedback-down',   // the whole allowed vocabulary
       'delineate-37.2,-112.9', 'delineate-utah', 'lookup', '', // must all be dropped
     ]) countEvent(name);
     return out;
   });
-  expect(sent).toHaveLength(8);
+  expect(sent).toHaveLength(10);
   expect(sent[0]).toMatch(/^https:\/\/drainage\.goatcounter\.com\/count\?p=delineate-UT&e=true&rnd=/);
   // strip the random cache-buster first: it is random, and a 37 landing in it used to fail
   // this ~1 run in 8 — the promise under test is about the event NAME, not that noise
