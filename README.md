@@ -30,6 +30,8 @@ npm test
 
 `tests/unit.spec.js` pins the pure functions (hash parsing, NWS resampling, the analytics vocabulary). `tests/flows.spec.js` replays whole user flows — delineation on both the StreamStats and NLDI paths, zone-based alerts, pin import/export, feedback — against canned service responses in `tests/mock.js`. Tests marked `fixme` are confirmed open bugs: they document the intended behavior and start passing when the bug is fixed.
 
+Contributing or just curious why the code is the way it is? [DEVELOPMENT.md](DEVELOPMENT.md) records the design decisions, the USGS/NWS service quirks, and the field-validation results behind the app.
+
 ## Embed it
 
 The app is one self-contained page and sends no anti-framing headers, so it drops into any site as an iframe:
