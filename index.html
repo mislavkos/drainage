@@ -182,11 +182,12 @@ function lsSet(k, v) {
   const s = JSON.stringify(v);
   try { localStorage.setItem(LS + k, s); }
   catch {
-    // quota full — evict the bulky basin caches so precious small writes (pins, units,
-    // basemap choice) still land; caches rebuild themselves on demand
+    // quota full — evict the bulky caches (basins, zone polygons, grid lookups) so
+    // precious small writes (pins, units, basemap choice) still land; caches rebuild
+    // themselves on demand
     try {
       for (const key of Object.keys(localStorage))
-        if (key.startsWith(LS + 'basin:') || key.startsWith(LS + 'ssbasin:')) localStorage.removeItem(key);
+        if (['basin:', 'ssbasin:', 'zone:', 'grid2:'].some(p => key.startsWith(LS + p))) localStorage.removeItem(key);
       localStorage.setItem(LS + k, s);
     } catch {}
   }
@@ -195,8 +196,13 @@ async function fetchRetry(url, opts, tries = 3) {
   let delay = 1000;
   for (let i = 1; ; i++) {
     try {
-      const r = await fetch(url, opts);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // 60 s cap: the slowest healthy call (NLDI basin) measures 8–29 s; past that the
+      // server has hung and a retry is the better bet (`?.`: older Safari lacks timeout)
+      const r = await fetch(url, { signal: AbortSignal.timeout?.(60000), ...opts });
+      if (!r.ok) {
+        if (r.status >= 400 && r.status < 500 && r.status !== 429) tries = i;   // a 4xx won't improve on retry
+        throw new Error(`HTTP ${r.status}`);
+      }
       return await r.json();
     } catch (e) {
       if (i >= tries) throw new Error(`${e.message} (${url.slice(0, 80)})`);
@@ -261,10 +267,14 @@ const map = new maplibregl.Map({
   center: lastCenter || [-112.90613, 37.23025],   // Zion
   zoom: lsGet('lastZoom') ?? (lastCenter ? 9 : 14)   // 14 on the Zion fallback: close enough to see channels
 });
-if (!lastCenter && navigator.geolocation)
+if (!lastCenter && navigator.geolocation) {
+  // a slow fix must not yank the map away from someone who already started panning
+  let userMoved = false;
+  map.on('movestart', e => { if (e.originalEvent) userMoved = true; });
   navigator.geolocation.getCurrentPosition(
-    p => { if (!location.hash) map.jumpTo({ center: [p.coords.longitude, p.coords.latitude], zoom: 12 }); },
+    p => { if (!location.hash && !userMoved) map.jumpTo({ center: [p.coords.longitude, p.coords.latitude], zoom: 12 }); },
     () => {}, { maximumAge: 600000 });
+}
 map.addControl(new maplibregl.NavigationControl());
 // MapLibre's own ResizeObserver misses late layout changes in some embedded webviews
 window.addEventListener('resize', () => map.resize());
@@ -283,7 +293,9 @@ map.getCanvas().style.cursor = 'crosshair';
   // swipe moves the app window instead, and only a force-quit recovers. 122px of panel was
   // still inside that zone on an 812px phone, so reserve 160. Clamped on load as well as on
   // drag: innerHeight changes with rotation, so a stored value can be out of range later.
-  const clampH = p => Math.min((innerHeight - 160) / innerHeight * 100, Math.max(20, p));
+  // outer Math.max: in an embed shorter than ~200px the 160px reserve exceeds the
+  // window and the cap goes negative — floor at 20% so the layout stays sane
+  const clampH = p => Math.max(20, Math.min((innerHeight - 160) / innerHeight * 100, p));
   if (lsGet('panelW')) root.setProperty('--panelw', lsGet('panelW') + 'px');
   if (lsGet('mapH')) root.setProperty('--maph', clampH(lsGet('mapH')).toFixed(1) + '%');
   dv.onpointerdown = e => {
@@ -302,7 +314,12 @@ map.getCanvas().style.cursor = 'crosshair';
       }
       map.resize();
     };
-    dv.onpointerup = () => { dv.onpointermove = dv.onpointerup = null; dv.classList.remove('dragging'); };
+    // pointercancel too: a cancelled touch drag otherwise leaves the move handler
+    // live, and merely hovering the divider afterwards would keep resizing
+    dv.onpointerup = dv.onpointercancel = () => {
+      dv.onpointermove = dv.onpointerup = dv.onpointercancel = null;
+      dv.classList.remove('dragging');
+    };
   };
 }
 
@@ -417,7 +434,10 @@ function setData(id, data) { const s = map.getSource(id); if (s) s.setData(data)
 
 // ---------- hash routing (fragment is attacker-controlled — validate hard) ----------
 function parseHash() {
-  const raw = decodeURIComponent(location.hash.slice(1));
+  // a link truncated mid-percent-escape (messaging apps do this) must read as
+  // invalid, not throw out of the hashchange handler
+  let raw;
+  try { raw = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
   if (!raw) return null;
   const parts = raw.split(',');
   // Number('') is 0, so a blank field would quietly delineate Null Island. Require digits.
@@ -503,7 +523,7 @@ function routeFromHash() {
     if (location.hash.length > 1) setStatus('Invalid share link — expected #lat,lon,name.', 'err');
     return;
   }
-  if (cur && cur.lat === h.lat && cur.lon === h.lon) {
+  if (cur && !cur.failed && cur.lat === h.lat && cur.lon === h.lon) {
     if (h.name && h.name !== cur.name) {
       cur.name = h.name;
       $('pin-name').value = h.name;
@@ -513,6 +533,10 @@ function routeFromHash() {
   }
   delineate(h.lat, h.lon, h.name).catch(e => {
     if (cur && cur.exact) return;   // NLDI path failed but StreamStats already delivered
+    // mark the failure so requesting the same point again retries instead of
+    // dead-ending on the "already showing this point" guards (coords checked
+    // because this catch can fire for a stale run after a new tap)
+    if (cur && cur.lat === h.lat && cur.lon === h.lon) cur.failed = true;
     setStatus('FAILED: ' + e.message + ' — drainage is UNKNOWN, not empty. Any dimmed area is the previous result.', 'err');
   });
 }
@@ -522,9 +546,12 @@ const markerAt = pt => map.getLayer('points') &&
 map.on('click', e => {
   if (map.getLayer('fcast') && map.queryRenderedFeatures(e.point, { layers: ['fcast'] }).length) return;
   if (markerAt(e.point)) return;   // the tap and pour-point markers open forecast popups instead
-  const lat = +e.lngLat.lat.toFixed(5), lon = +e.lngLat.lng.toFixed(5);
-  if (cur && cur.lat === lat && cur.lon === lon) return;
-  location.hash = `${lat},${lon}`;  // routeFromHash does the work → back button works
+  const ll = e.lngLat.wrap();   // a click on a wrapped world copy must stay in [-180,180]
+  const lat = +ll.lat.toFixed(5), lon = +ll.lng.toFixed(5);
+  if (cur && !cur.failed && cur.lat === lat && cur.lon === lon) return;
+  const h = `${lat},${lon}`;
+  if (location.hash === '#' + h) routeFromHash();   // retry after a failure — same hash fires no hashchange
+  else location.hash = h;  // routeFromHash does the work → back button works
 });
 function forecastPopup(coords, label, url) {
   const a = document.createElement('a');
@@ -568,6 +595,11 @@ function dimOld(on) {
 // ---------- delineation ----------
 let cur = null;   // { lat, lon, name, comid, snap, basin, areaKm2 }
 let runId = 0;
+// The forecast and alerts panels render asynchronously and can be invoked twice
+// per tap (NLDI, then the StreamStats upgrade). Each invocation takes a ticket;
+// only the newest may write, so a slower coarse-basin result can never overwrite
+// the exact basin's forecast or alerts.
+let fcSeq = 0, alSeq = 0;
 
 async function delineate(lat, lon, name) {
   const run = ++runId;
@@ -824,6 +856,7 @@ async function upgradeSplit(lat, lon, reachBasin, run) {
     if (turf.area(db) < 0.5 * turf.area(reachBasin)) return;
     cur.split = true;   // exact result — suppresses the reach-basin caveats (StreamStats may still override)
     renderBasin(db, 'exact — ends at the orange point');
+    checkAlerts(db, run);   // the reach basin's alerts erred large — re-check against the exact shape
   } catch (e) { /* upgrade only — reach basin already rendered */ }
 }
 
@@ -834,8 +867,13 @@ function renderForecastLinks(basin) {
     { label: 'Nearest stream (where you are)', c: pour },
     { label: 'Middle of the drainage', c: turf.centerOfMass(basin).geometry.coordinates }
   ];
-  // 4 far-flung boundary points, greedy max-min so they spread instead of clustering
-  const coords = turf.coordAll(basin);
+  // 4 far-flung boundary points, greedy max-min so they spread instead of clustering.
+  // ponytail: an unsimplified basin can carry tens of thousands of vertices and the
+  // greedy scan is O(picks × chosen × vertices) — ~500 samples place the far spots
+  // within a few hundred meters, plenty for picking NWS grid cells
+  const all = turf.coordAll(basin);
+  const step = Math.max(1, Math.ceil(all.length / 500));
+  const coords = all.filter((_, i) => i % step === 0);
   const chosen = spots.map(s => s.c);
   for (let k = 0; k < 4; k++) {
     let best = null, bestD = -1;
@@ -905,7 +943,7 @@ function fmtHour(t, tz, withDay) {
 }
 
 async function renderForecast(spots) {
-  const run = runId;
+  const run = runId, seq = ++fcSeq;
   const el = $('forecast');
   el.className = 'note';
   el.textContent = 'Loading forecast…';
@@ -914,10 +952,15 @@ async function renderForecast(spots) {
     const infos = await Promise.all(spots.map(s => getGridInfo(s.c)));
     const cells = [...new Map(infos.map(i => [i.url, i])).values()]; // spots share grid cells — dedupe
     const datas = await Promise.all(cells.map(i => getGridData(i.url)));
-    if (run !== runId) return;
+    if (run !== runId || seq !== fcSeq) return;
     const t0 = Math.floor(Date.now() / 3600000) * 3600000;
     const qpf = [], pop = [];
-    const qpfAll = datas.map(d => sampleHourly(d.properties.quantitativePrecipitation?.values, t0, HOURS, true));
+    // QPF arrives in mm (the uom says so) — trust the uom, not the assumption
+    const qpfAll = datas.map(d => {
+      const q = d.properties.quantitativePrecipitation;
+      const toInch = (q?.uom || '').includes(':in') ? 1 : 1 / 25.4;
+      return sampleHourly(q?.values, t0, HOURS, true).map(v => v == null ? null : v * toInch);
+    });
     const popAll = datas.map(d => sampleHourly(d.properties.probabilityOfPrecipitation?.values, t0, HOURS, false));
     for (let i = 0; i < HOURS; i++) {
       qpf.push(maxOrNull(qpfAll.map(a => a[i])));
@@ -927,9 +970,9 @@ async function renderForecast(spots) {
     const inF = (pourData.temperature?.uom || '').includes('degF');
     const temp = sampleHourly(pourData.temperature?.values, t0, HOURS, false)
       .map(v => v == null ? null : inF ? v : v * 9 / 5 + 32);
-    drawTimeline(el, t0, qpf.map(v => v == null ? null : v / 25.4), pop, temp, infos[0].tz);
+    drawTimeline(el, t0, qpf, pop, temp, infos[0].tz);
   } catch (e) {
-    if (run !== runId) return;
+    if (run !== runId || seq !== fcSeq) return;
     el.className = 'warn';
     el.textContent = `FORECAST UNKNOWN — could not load (${e.message}). `;
     const a = document.createElement('a');
@@ -1063,13 +1106,17 @@ async function getZoneGeometry(zurl) {
   if (g === null) {                     // null = never fetched; false = fetched, no geometry
     const z = await fetchRetry(zurl);
     g = z.geometry || false;
-    lsSet(key, g);                      // zone geometry never changes — cache forever
+    // real geometry never changes — cache forever. A MISSING one might be a transient
+    // service wobble: persisting it would silently exclude the zone from every future
+    // alert check on this device, so keep that in-session only.
+    if (g) lsSet(key, g);
   }
   zoneMemo.set(zurl, g);
   return g;
 }
 
 async function checkAlerts(basin, run) {
+  const seq = ++alSeq;
   const el = $('alerts');
   el.textContent = 'Checking alerts…';
   el.className = 'note';
@@ -1084,7 +1131,7 @@ async function checkAlerts(basin, run) {
       let geoms = a.geometry ? [a.geometry] : await Promise.all((a.properties.affectedZones || []).map(getZoneGeometry));
       if (geoms.filter(Boolean).some(g => turf.booleanIntersects(g, basin))) hits.push(a);
     }
-    if (run !== runId) return;
+    if (run !== runId || seq !== alSeq) return;
     el.textContent = '';
     // the footer's "no alerts ≠ safe" note only makes sense when there are no alerts
     $('no-alerts-note').style.display = hits.length ? 'none' : '';
@@ -1105,13 +1152,23 @@ async function checkAlerts(basin, run) {
         d.append(b, p);
         // the full CAP text is already in this response — no need to hunt it down on nws.gov
         const full = [a.properties.description, a.properties.instruction].filter(Boolean).join('\n\n');
-        if (full) { const det = document.createElement('details'); det.className = 'note'; const sum = document.createElement('summary'); sum.textContent = 'Full alert text'; sum.style.cursor = 'pointer'; const body = document.createElement('div'); body.textContent = full;             // external string — textContent only body.style.whiteSpace = 'pre-wrap'; det.append(sum, body); d.appendChild(det);
+        if (full) {
+          const det = document.createElement('details');
+          det.className = 'note';
+          const sum = document.createElement('summary');
+          sum.textContent = 'Full alert text';
+          sum.style.cursor = 'pointer';
+          const body = document.createElement('div');
+          body.textContent = full;   // external string — textContent only
+          body.style.whiteSpace = 'pre-wrap';
+          det.append(sum, body);
+          d.appendChild(det);
         }
         el.appendChild(d);
       }
     }
   } catch (e) {
-    if (run !== runId) return;
+    if (run !== runId || seq !== alSeq) return;
     el.className = 'warn';
     el.textContent = `ALERTS UNKNOWN — check failed (${e.message}). Do not read this as all-clear. `;
     $('no-alerts-note').style.display = '';
@@ -1149,6 +1206,7 @@ function exportName(ext) {
   return `${safe || 'basin'}.${ext}`;
 }
 $('btn-geojson').onclick = () => {
+  flushName();
   const fc = { type: 'FeatureCollection', bbox: turf.bbox(cur.basin), features: [
     { type: 'Feature', properties: { name: rawLabel() + ' pour point' },
       geometry: { type: 'Point', coordinates: cur.snap } },
@@ -1162,6 +1220,7 @@ $('btn-geojson').onclick = () => {
 
 const xmlEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 $('btn-kml').onclick = () => {
+  flushName();
   const ring = r => r.map(c => `${c[0]},${c[1]}`).join(' ');
   const poly = rings =>
     `<Polygon><outerBoundaryIs><LinearRing><coordinates>${ring(rings[0])}</coordinates></LinearRing></outerBoundaryIs>` +
@@ -1203,6 +1262,7 @@ $('btn-clear').onclick = () => {
 };
 
 $('btn-share').onclick = async () => {
+  flushName();
   countEvent('share');
   try { await navigator.clipboard.writeText(location.href); setStatus('Share link copied.'); }
   catch { setStatus('Copy this link: ' + location.href); } // no prompt() — blocked in embedded webviews
@@ -1308,6 +1368,8 @@ $('fb-more').onsubmit = async e => {
   e.preventDefault();
   if ($('fb-botcheck').checked) return;          // honeypot tripped: silently drop
   if (!fbRating) return;                        // form is hidden without one — belt and braces
+  const send = e.target.querySelector('button[type=submit]');
+  send.disabled = true;                         // a double-click must not send twice
   $('fb-status').textContent = 'Sending…';
   const body = { access_key: W3F_KEY, subject: 'Drainage feedback', from_name: 'Drainage',        rating: fbRating, comment: $('fb-comment').value.slice(0, 2000) };
   if ($('fb-loc').checked && cur) body.spot = $('fb-loc-val').textContent;
@@ -1319,6 +1381,7 @@ $('fb-more').onsubmit = async e => {
     $('fb-more').hidden = true;           // the emails, and a change of mind can't inflate it
     $('fb-ask').textContent = 'Sent — thanks.';
   } catch { $('fb-status').textContent = 'Couldn’t send. Try again in a moment.'; }
+  send.disabled = false;
 };
 
 // ---------- saved pins ----------
@@ -1333,10 +1396,12 @@ function applyName() {
 }
 let nameTimer;
 $('pin-name').oninput = () => { clearTimeout(nameTimer); nameTimer = setTimeout(applyName, 300); };
+// a rename typed <300 ms before Share/export/pin must land before the action reads it
+function flushName() { clearTimeout(nameTimer); applyName(); }
 $('btn-pin').onclick = () => {
-  clearTimeout(nameTimer);
-  applyName();
-  const pins = lsGet('pins') || [];
+  flushName();
+  // re-pinning a saved spot updates its name instead of duplicating the row
+  const pins = (lsGet('pins') || []).filter(p => pinKey(p) !== pinKey(cur));
   pins.push({ lat: cur.lat, lon: cur.lon, name: cur.name });
   lsSet('pins', pins);
   countEvent('pin');

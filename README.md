@@ -18,6 +18,18 @@ Open http://localhost:8137. Don't open index.html as a `file://` URL: the browse
 
 No build step, no backend, no accounts. One static HTML file plus vendored libraries (MapLibre GL, Turf).
 
+## Run the tests
+
+The app itself has no dependencies; the test harness (dev-only) uses [Playwright](https://playwright.dev) against a fully mocked network — no USGS/NWS call ever leaves the machine, so tests are fast, deterministic, and safe to run offline.
+
+```
+npm install
+npx playwright install chromium
+npm test
+```
+
+`tests/unit.spec.js` pins the pure functions (hash parsing, NWS resampling, the analytics vocabulary). `tests/flows.spec.js` replays whole user flows — delineation on both the StreamStats and NLDI paths, zone-based alerts, pin import/export, feedback — against canned service responses in `tests/mock.js`. Tests marked `fixme` are confirmed open bugs: they document the intended behavior and start passing when the bug is fixed.
+
 ## Embed it
 
 The app is one self-contained page and sends no anti-framing headers, so it drops into any site as an iframe:

@@ -1,0 +1,11 @@
+{
+  "name": "drainage-tests",
+  "private": true,
+  "description": "Dev-only test harness for index.html — the app itself has no build step and no runtime dependencies.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

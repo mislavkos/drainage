@@ -3,3 +3,8 @@ HANDOFF.md
 original-prompt.md
 design/
 validate-escalante*
+
+# test harness (dev-only)
+node_modules/
+test-results/
+playwright-report/
