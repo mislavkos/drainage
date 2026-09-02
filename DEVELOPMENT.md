@@ -53,6 +53,13 @@ the app looks fine.
   saved-pin sort compares `bareName` so the Ω block is alphabetical inside itself. The
   share hurdle is a `confirm()` in front of *both* share paths (`okToShareUnpub`) — the
   point is only to stop the accidental share, never to prevent a deliberate one.
+- **A route is an input affordance, not a second delineation path** (2026-09-02). Tracing
+  a canyon, or importing its KML/GPX and picking a section, resolves to ONE lat/lon which
+  then goes through the fragment exactly like a tap — both end at `useRoute()`.
+  `delineate()` and everything downstream never learned either mode exists. See "Two ways
+  to a pour point" for why the other vertices are not used, why the route stays out of the
+  share link, why the pick is a user-facing dropdown rather than a name/colour classifier,
+  and why a ropewiki URL cannot be fetched.
 - **"About this app" stays short. A new feature does not automatically earn a bullet**
   (2026-08-31 — the pasted-coordinate and UTM bullets were added with those features and
   removed by the user shortly after; the features stayed). That panel is read by someone
@@ -212,6 +219,265 @@ doesn't have, which is exactly the trap it defuses. Nothing in the UI explains i
 reopen without a user asking). App sources/layers are added on the first `styledata`
 event, not `load` — `load` also waits for basemap tiles, and a hung tile server
 (OpenTopoMap does this) would leave the app tap-dead.
+
+## Two ways to a pour point: tracing and importing (2026-09-02)
+
+The problem, raised by a beta reader and real: **people tap where they drop in.** A
+drainage is computed at one point, so a tap at the top of the technical section misses
+every tributary joining below it — and the error direction is *understating* the water,
+which is correction #2's direction. The right tap is the bottom of the technical section,
+just upstream of the confluence you walk out at, and nothing in a bare map says so.
+
+Rejected first, and don't re-derive them:
+
+- **"Move the pour point downstream automatically."** How far? There is no answer. Lower
+  point, bigger drainage, all the way to Lake Powell. This is exactly the NLDI-vs-exact
+  gap that the whole StreamStats path exists to close (73× at Dry Fork Coyote W), so
+  building deliberate drainage inflation back in would undo it, and it would hurt the
+  users who *do* tap correctly the most.
+- **A "move me downstream" tick, on by default.** Same inflation, now with a setting.
+- **A first-run instruction panel.** People don't read them, and it's a lie by omission:
+  it can't verify that they did it.
+
+What shipped instead: **trace the canyon, delineate at the trace's bottom end.** Two ways
+to a pour point, one code path after it.
+
+- **The line is NOT an input to the delineation.** The catchment of the bottom point
+  already contains the whole route and every confluence along it, so there is nothing to
+  compute from the other vertices. `finishDraw()` resolves the trace to one lat/lon and
+  hands it to `goTo()` — the same function a tap uses — so it arrives through the
+  fragment with the back button, the coordinate tolerances and the share links intact.
+  Do not give the polyline a delineation path of its own.
+- **The bottom end is the LAST vertex, chosen by trace direction, not by elevation.**
+  You trace a canyon the way you walk it. The alternative — an elevation lookup per
+  vertex (`epqs.nationalmap.gov`) to find the low end regardless of direction — buys a
+  new, famously flaky service dependency for something the containment check below
+  already surfaces loudly. Comparing the two ends' *drainage areas* (the downstream one
+  is bigger by definition) is the theoretically correct pick and was also rejected: it
+  needs two full delineations before the answer, inside the app's documented main bug
+  factory, to decide something the user already told us by tracing downhill.
+- **The containment check is the whole reason to have a line.** Everything upstream of
+  the pour point is inside the basin by construction, so a vertex OUTSIDE it means the
+  snap found the wrong channel, or the line was traced bottom-to-top — which puts the
+  pour point at the TOP and understates the drainage. One Turf point-in-polygon per
+  vertex in `renderBasinInfo()` catches both, and the majority-outside case names the
+  backwards trace explicitly, because that is the dangerous one. **One** point outside is
+  normal and says nothing: the last vertex IS the pour point and sits ON the boundary.
+  The minority case is a `note`, not a `warn` — a route that leaves the drainage on the
+  walk out is a real and correct thing to see.
+- **The trace is not in the share link.** Encoding N coordinates in the fragment for
+  something the recipient's own delineation reproduces from the pour point alone would
+  contradict "Share the pour point, not the polygon" for no gain. Same reason it isn't in
+  the GeoJSON/KML exports: those mimic StreamStats' `[Point, Polygon]` shape exactly
+  because that is what Gaia is confirmed to import, and a third feature reopens a
+  user-tested bug.
+- **A plain tap clears the trace** (`clearRoute()` in the click handler). The tap moves
+  the pour point somewhere the old line no longer describes, so leaving it drawn would
+  render a route and a basin that have nothing to do with each other.
+- **Draw mode is a button that toggles, not a persistent mode radio.** Default is the
+  direct tap; the button arms tracing and its own label becomes "Done — n points", which
+  is the finish control on a phone where there is no Enter key. `doubleClickZoom` is
+  disabled while tracing (a quick double tap would otherwise zoom the map out from under
+  the vertex) and re-enabled by `endDraw()` on every exit — including Escape and Clear.
+- **Locked mode needs no code for this.** `html.locked #panel { display: none }` takes
+  the button with it, and the click handler's `if (locked) return` already stood.
+- No About-panel bullet, per the documented default. The README carries the how-to.
+
+### Importing a canyon's KML / GPX
+
+Same `route`, same `useRoute()`, same containment check — the file only has to fill the
+array. What took the work was deciding which part of the file is the canyon. Four things
+were measured on ropewiki's real Keyhole export before any of it was written:
+
+1. **The files carry no elevation.** Every GPX `<ele>` is `0.000`; every KML coordinate
+   ends in `,0`. The "a dropped track can read its own low end" plan written in this file
+   on 2026-09-02 was wrong and is retracted — elevation has to be fetched.
+2. **USGS 3DEP samples a whole route in one CORS-open request**, 1 m resolution:
+   `elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples`
+   with `geometryType=esriGeometryMultipoint`. 110 vertices, one GET, `ACAO: *`. Points
+   outside coverage come back missing or `"NoData"` — must read as null, because a zero
+   would look like sea level and win every ranking.
+3. **Taking the route's lowest point is catastrophically wrong.** Keyhole's global minimum
+   sits in the EXIT walk, down by Clear Creek, because the exit drops through the highway
+   tunnel below the canyon's own outflow. Delineated: **64.84 km² there against 3.42 km²**
+   at the true bottom of the technical section. **19×** — the systemic inflation the whole
+   StreamStats path exists to remove, re-entering through the front door. Never pick the
+   global minimum.
+4. **The error being fixed is much smaller than the error available.** Keyhole reads
+   3.00 km² tapped at the top of the technical section and 3.42 km² at the bottom: **+14%**.
+   (The 73× in "Validation" is NLDI-vs-exact, an unrelated failure.) So when the pick is
+   uncertain it must stay HIGH. Overshooting is not the safe direction here.
+
+What ships: **rank the segments by measured net descent, pre-select the steepest, let the
+user change it in one click.** For Keyhole that lands on "Class 3 Section", whose low end
+is exactly the bottom of the technical part, from both the KML and the GPX (byte-identical
+results: `37.22525,-112.90285`, 3.42 km²).
+
+- **Don't classify by name or colour.** Colour is a real signal — Keyhole's two technical
+  segments are both `#A52714` while approach/connector/exit are green/olive/yellow, and
+  the Google MyMaps style id even embeds the RGB — but **GPX drops styles entirely**, so a
+  colour rule would work on half the inputs. Names are worse: "Class 3 Section" here,
+  something else everywhere. Segment *structure* is the only thing both formats always
+  carry, so that is what the UI exposes.
+- **The numbers in the picker are what make it usable.** A segment labelled `Track 003`
+  with `↓ 138 ft` over `808 ft` is self-evidently the descent. That is why the label
+  carries length and drop, and why the heuristic doesn't have to be trusted.
+- **Two elevation samples per segment, not every vertex.** Endpoints reproduce the
+  full-profile net-drop ranking exactly (checked against all 110 of Keyhole's vertices:
+  −41.7 / +12.2 / −9.7 / +42.1 / −2.9 m), and on a *descending* segment the low end IS an
+  endpoint — only the approach and exit dip below theirs, and those are what the ranking
+  discards. Marked `ponytail:` in the code with the upgrade path.
+- **No elevation means no guess.** If 3DEP fails or returns nothing rankable, nothing is
+  pre-selected, nothing is delineated, and the note says to pick the section. A silently
+  wrong pour point is the exact failure this feature exists to prevent.
+- **`fmtDist` must not be used for a drop.** It switches to miles above 305 m, so a 400 m
+  descent would read "0.25 mi". `fmtElev` is feet/metres only.
+- **No new analytics label.** `delineate-XX` already fires from `renderBasin()`; the
+  import path adds nothing to the wire, so `EVENT_OK` and the Privacy bullets are
+  untouched. Keep it that way — a `import-kml` label would make the enumerated promise
+  false in two files.
+- Names and filenames from the file reach the DOM by `textContent` only, and the parse is
+  bounded (`MAX_SEGS` 60, `MAX_PTS` 40 000, `MAX_FILE` 8 MB) even though the bytes are
+  local. Tag lookups go through `getElementsByTagNameNS('*', …)`: KML and GPX both
+  default-namespace their root and some writers emit prefixed elements.
+- **The document-level `drop` handler early-returns on `locked`.** A beta embed's pour
+  point comes from the URL; a reader dropping a file on it must change nothing.
+- Fixtures `tests/fixtures/canyon.{kml,gpx}` are built against mock.js's synthetic terrain
+  (north = higher, 100 m per 0.01°) and deliberately reproduce Keyhole's shape: the
+  global low point sits in the Approach/Exit, so the test fails if anyone "simplifies" the
+  pick to the route minimum.
+
+### Validation of the descent pick (2026-09-02, 178 canyons)
+
+Validated on ONE canyon at first, which was not enough — the second canyon class it met
+broke it. Corpus: **178 real ropewiki KML files** recovered from the Wayback Machine
+(`web.archive.org/cdx/search/cdx?url=ropewiki.com/images*` → `…/web/{ts}id_/{url}` for the
+unmodified bytes; the live site is challenged, see below). Every file was run through the
+**shipped** code with 3DEP live and USGS/NWS stubbed. Scored by the segments' NAMES, which
+the ranking never reads — so the labels are free, independent ground truth. Ambiguous names
+count as failures, which makes the pass rate conservative.
+
+**The failure ranking-by-total-drop had, and why:** a **car shuttle or access road descends
+more than the canyon it serves.** 17 of 124 scored files picked one — "Drive", "Dirt Road",
+"Rimrock Shuttle", "Skyline Shuttle", "Approach Brennan Shuttle". Keyhole's file has no
+shuttle track, so one canyon could never have shown this.
+
+**The fix, and why it is not a name rule:** roads are graded, canyons are not. In this
+corpus the technical sections run 11–23% (Keyhole 11, Deer Creek 16, Water Canyon 16–23,
+Birch Hollow 18) and the offending shuttles 1–5%. `MIN_GRADE = 0.08` is above sustained
+road grade and well below any real canyon here. Thresholds measured, not guessed:
+
+| ranking | pass | fail | asks user |
+|---|---|---|---|
+| max drop (first version) | 107 | **17 (14%)** | 21 |
+| max gradient, any length | 114 | 22 (16%) | — |
+| max drop, gradient ≥ 5% | 106 | 12 (10%) | 29 |
+| **max drop, gradient ≥ 8%** | **111** | **9 (8%)** | **32** |
+| max drop, gradient ≥ 12% | 101 | 8 (7%) | 50 |
+
+Reproducible without re-running a browser: `tools/canyon-corpus.txt` is the archive
+manifest, `tools/canyon-corpus.py fetch` re-downloads the KMLs to a local directory, and
+`tools/canyon-corpus.py compare` re-prints this table from `tools/descent-pick.tsv` (the
+coordinate-free per-section data — name, length, drop, gradient, what was picked). **The
+KMLs are deliberately NOT in this repo**: ropewiki content is CC-BY-NC-SA 3.0 and this repo
+is MIT, so NonCommercial collides with MIT's commercial grant and ShareAlike would pull the
+whole repo with it. Fetching from archive.org for measurement is fine; re-hosting is not.
+The compare is an offline mirror of the ranking and its counts differ by a file or two from
+the table above, which came from the real app over all 178 (see the script's header).
+
+Ranking by *gradient alone* is worse than by drop — it favours a short steep connector. A
+softer "gate, else fall back to max drop" was measured at +6 right and +2 wrong with more
+code; rejected, because "ask the user" is already built, costs one click, and shows the
+name, length and gradient needed to choose. The 32 asks are genuinely low-gradient slots
+(Orderville 1–3%, Zebra 2–5%) — the app declines to guess rather than guessing wrong.
+
+**Against the author's own pins**, with real StreamStats delineation at both points:
+
+| canyon | picked vs pinned | area ratio |
+|---|---|---|
+| Deer Creek (MRNP) | 5 m apart | 1.00× |
+| Keyhole | 236 m apart | 1.02× |
+| Water Canyon | 1 550 m apart | 0.86× (picks higher — the *understating* direction, the one to watch) |
+| Birch Hollow | **24 m apart** | **15.04×** (4.03 → 60.59 km²) |
+
+**Birch Hollow is the finding that matters, and it is not a ranking error.** Two points
+24 m apart delineated 4.03 km² and 60.59 km², because the bottom of that technical section
+sits AT the Orderville confluence: one point snaps to Birch Hollow's own channel, the other
+to the Orderville mainstem. This is the confluence ambiguity already noted under
+"Validation" ("tap upstream of a confluence to get the tributary") — except this feature
+deliberately aims the pour point at the bottom of the technical section, which is *exactly*
+the most snap-ambiguous place on the route. Consequences, and why nothing was added:
+
+- Both answers are defensible for their own spot. Standing at the confluence, 60 km² of
+  Orderville really is what can arrive; standing in the slot, 4 km² is yours.
+- The error direction is **overstating**, which is the safe one. No warning currently fires
+  for it (the tap is inside the basin, the snap is short, the area is not small).
+- **The fix is UNDECIDED as of 2026-09-02** — deliberately open, not forgotten, and not
+  to be settled casually. Three shapes were considered:
+  1. *Nudge the pour point upstream by a fixed distance.* **Rejected.** A fudge factor that
+     systematically understates — the dangerous direction — and "100 m" is half the canyon
+     on a 200 m technical section.
+  2. *Detect the jump and warn.* Delineate a second time ~25% back up the chosen section
+     and compare; a ratio over roughly 3× means the pour point is below a confluence. One
+     extra StreamStats call, parallel to the existing one, so wall-clock barely moves.
+     **Confirmed to catch this case** by the measurement above: 60.59 vs 4.03 km² is 15×,
+     and Keyhole's honest growth across its whole technical section is only 1.14×
+     (3.00 → 3.42), so the two regimes are far apart. The 3× threshold is a guess and
+     would need measuring on ~15 canyons whose route bottom is a known confluence first —
+     picking a constant from two data points is exactly how MIN_GRADE came out wrong the
+     first time.
+  3. *Show both numbers instead of calling one an error.* The two areas answer two real
+     questions: 60.6 km² is what can arrive at the exit where you stand in Orderville,
+     4.0 km² is what is above you while committed in the slot. This is only possible
+     because a route exists — a bare tap gives no upstream point to compare against, since
+     nothing says which way is up-canyon. A genuine feature, including a decision about
+     which basin the rain timeline and alerts run against (the larger, erring safe).
+- Not specific to importing: a manual trace carries the same exposure, and so does a plain
+  tap at a canyon mouth. Import merely aims there deliberately and every time.
+
+### Why the app does not fetch a ropewiki URL
+
+Asked for, and measured as impossible from a static page (2026-09-02). **Ropewiki sits
+behind a Cloudflare managed challenge**, including on the track files themselves. Ropewiki
+hosts them at a MediaWiki upload path — not Google MyMaps, despite the KML being
+MyMaps-authored — and that exact URL is challenged:
+
+```bash
+curl -sI -H 'Origin: https://mislavkos.github.io' \
+  'https://ropewiki.com/images/b/bb/Keyhole_Canyon_%28Zion_National_Park%29.kml'
+# HTTP/2 403 · cf-mitigated: challenge · content-type: text/html  (the "Just a moment..." page)
+```
+
+`cf-mitigated: challenge` is Cloudflare saying so outright. The CORS **preflight** is 403
+too, and no variant sends any `access-control-*` header, so it fails before CORS is even
+reachable; the `.gpx` twin at the same path is identical. A real Chromium tab also gets the
+interstitial, and `fetch()` from the app's own origin fails for the page and for
+`api.php?…&origin=*`. Only `/robots.txt` and `/favicon.ico` clear it (the favicon even
+sends `ACAO: *` — Cloudflare's own managed exemptions, not a static-asset rule); `/images/`,
+`/api.php`, `/load.php` and `/index.php` are all challenged. **Don't re-derive this by
+guessing paths — the file URL above is the one that matters.**
+
+So even if CORS appeared, what came back would be the challenge page. Making it work needs
+a server that passes the challenge — a backend, against the first decision in this file —
+and it re-breaks whenever Cloudflare tightens. Ropewiki also publishes
+`Content-Signal: search=yes, ai-train=no, use=reference` in robots.txt: an app fetching
+their volunteer infrastructure on every user's behalf is what that posture is aimed at.
+
+The two paths that do work: the user downloads and drops the file themselves (shipped), or
+ropewiki embeds `?locked#lat,lon,name` on the canyon's own page — they know their pour
+point better than any heuristic here. That is a conversation with ropewiki, not code.
+
+**What their robots.txt does NOT say** (corrected 2026-09-02 — this file briefly claimed
+otherwise). Ropewiki publishes `Content-Signal: search=yes,ai-train=no,use=reference`, and
+that is *not* a statement about apps downloading files. Every signal in the vocabulary is
+scoped to search indexing or AI consumption — their own robots.txt defines `use` as "how
+AI systems may consume the content" — and `ai-input` is left unspecified, which the policy
+text in that same file says "neither grants nor restricts." The `User-agent: *` block
+carries `Allow: /`; the `Disallow: /` blocks name AI crawlers (Amazonbot,
+Applebot-Extended, Bytespider). So do not cite Content-Signal as the reason this feature
+doesn't exist. The reason is `cf-mitigated: challenge`, which settles it technically. The
+only other argument is load on volunteer infrastructure at app scale — a courtesy call
+made here deliberately, not a restriction ropewiki stated.
 
 ## Concurrency invariants
 
@@ -601,5 +867,7 @@ monetization; legal posture; academic/agency contacts. Risk formulas, Flash Floo
 Guidance, and the observed-QPE study were considered and **dropped entirely** — this
 tool presents sourced facts (drainage, forecast, alerts), not computed risk.
 
-The one recurring open item: **re-run the splitcatchment probe occasionally** — when
+Genuinely open, both deliberately: **the confluence jump at a route's bottom end** (see
+"Validation of the descent pick" — three candidate fixes, one rejected, threshold
+unmeasured; the author is deciding), and **re-run the splitcatchment probe occasionally** — when
 USGS deploys the fix, exact-point delineation improves automatically (guards stay).

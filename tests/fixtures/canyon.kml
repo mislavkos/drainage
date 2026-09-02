@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Test Canyon</name>
+    <Placemark><name>Parking</name><Point><coordinates>-112.9,37.19,0</coordinates></Point></Placemark>
+    <Placemark>
+      <name>Test Canyon - Approach</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -112.9,37.19,0
+          -112.9005,37.2,0
+          -112.9,37.21,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Test Canyon - Slot</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -112.9,37.21,0
+          -112.9012,37.207,0
+          -112.902,37.204,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Test Canyon - Big Drop</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -112.902,37.204,0
+          -112.903,37.199,0
+          -112.904,37.192,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Test Canyon - Exit</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -112.904,37.192,0
+          -112.902,37.1905,0
+          -112.9,37.19,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>Test Canyon - Shuttle</name>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>
+          -112.9,37.21,0
+          -112.8,37.2,0
+          -112.7,37.19,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

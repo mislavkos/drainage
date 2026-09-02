@@ -54,10 +54,10 @@ const FIXTURES = {
 };
 
 // opts: { streamstats: 'decline'|'exact', alerts: 'zone'|'none'|'fail',
-//         nldi: 'ok'|'fail', zone: 'ok'|'missing' }
+//         nldi: 'ok'|'fail', zone: 'ok'|'missing', elev: 'ok'|'nodata'|'fail' }
 // Returns { opts, requests } — opts is live-mutable, requests logs {url, post}.
 async function mockServices(page, opts = {}) {
-  const o = Object.assign({ streamstats: 'decline', alerts: 'zone', nldi: 'ok', zone: 'ok' }, opts);
+  const o = Object.assign({ streamstats: 'decline', alerts: 'zone', nldi: 'ok', zone: 'ok', elev: 'ok' }, opts);
   const requests = [];
   await page.route('**/*', route => {
     const url = route.request().url();
@@ -74,6 +74,15 @@ async function mockServices(page, opts = {}) {
     if (url.includes('/pourpoint/v2/snap/')) return json(o.streamstats === 'exact' ? FIXTURES.ssSnap() : FIXTURES.ssDecline());
     if (url.includes('/ss-delineate/')) return json(FIXTURES.ssDelineate());
     if (url.includes('gis.streamstats.usgs.gov') && url.includes('f=json')) return json({ layers: [] });
+    // 3DEP batched elevation. Synthetic terrain: north is higher, 300 m per 0.01 deg of
+    // latitude, so a track's net drop is a plain function of its endpoints' latitudes and
+    // a north-south fixture section is steep enough to clear MIN_GRADE.
+    if (url.includes('3DEPElevation/ImageServer/getSamples')) {
+      if (o.elev === 'fail') return fail();
+      const pts = JSON.parse(new URL(url).searchParams.get('geometry')).points;
+      if (o.elev === 'nodata') return json({ samples: [] });   // outside coverage
+      return json({ samples: pts.map((p, i) => ({ locationId: i, value: String(1600 + (p[1] - 37.2) * 30000) })) });
+    }
     if (url.includes('api.weather.gov/points/')) return json(FIXTURES.points());
     if (url.includes('api.weather.gov/gridpoints/')) return json(FIXTURES.grid());
     if (url.includes('api.weather.gov/alerts/active')) {

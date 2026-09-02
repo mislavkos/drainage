@@ -125,9 +125,23 @@
       <label class="note" style="white-space:nowrap;cursor:pointer" title="Switch between miles/°F/inches and km/°C/mm">mi<input type="checkbox" id="chk-metric">km</label>
     </span>
   </div>
-  <div class="note" style="margin:-6px 0 8px">Canyoneer's second best friend</div>
   <div id="status">Tap a point on the map to see everything that drains to it.</div>
   <div id="coord-note" class="note"></div>
+  <!-- The three ways in are one operation, and nothing on screen said so (user-flagged
+       2026-09-02): three buttons read as three features. This deliberately does NOT explain
+       what they do — it hooks them onto the status line directly above, which already says
+       tapping shows what drains to a point, so "instead of tapping" inherits that whole
+       sentence for free. A 25-word version naming the "pour point" was tried first and
+       dropped: it was prose (skipped) and the term itself read as jargon to a canyoneer. -->
+  <div class="note" id="ways">Or, instead of tapping:</div>
+  <div>
+    <button id="btn-draw" title="Trace the canyon from its top down to where you walk out — the drainage is taken at the bottom end">&#9999; Draw the canyon</button>
+    <button id="btn-import" title="Load a canyon's KML or GPX (ropewiki, CalTopo, Gaia) and pick which section is the descent">Import KML / GPX</button>
+    <input type="file" id="file-track" accept=".kml,.gpx,.xml" hidden>
+  </div>
+  <div class="note" id="draw-note"></div>
+  <div id="import-box" hidden><select id="seg-pick" aria-label="Which section is the descent"></select></div>
+  <div class="note" id="import-note"></div>
   <div id="legend"><span class="dot" style="color:#666">●</span> your tap ·
     <span class="dot" style="color:#e08000">●</span> nearest stream ·
     <span class="dot" style="color:#8b2fd0">●</span> forecast spots</div>
@@ -226,12 +240,12 @@ const $ = id => document.getElementById(id);
 
 // ---------- locked mode (?locked) ----------
 // The pour point is whatever the fragment says and nothing can change it: map clicks are
-// inert, the text pane is gone. Built for a beta site (ropewiki and friends) that embeds
-// one canyon's drainage in that canyon's own page, where re-tapping the map only produces
+// inert, the standard text pane is gone. Built for beta sites that embeds
+// one canyon's drainage in that canyon's own page, where re-tapping the map would only produce
 // a drainage for some other canyon. A plain iframe with no query string keeps the full app
 // — that is the no-param case and it still works, so this flag is NOT called "embed".
 // Sub-flags default ON: an embedder who writes only `?locked` gets the rain, the alerts and
-// the way back to the full app, and has to switch each off deliberately.
+// the way back to the full app, and has to switch each off deliberately if unwanted.
 const qs = new URLSearchParams(location.search);
 const qflag = (k, dflt) => qs.has(k) ? qs.get(k) !== '0' : dflt;
 const locked = qflag('locked', false);
@@ -291,14 +305,15 @@ function setStatus(msg, cls) { const s = $('status'); s.textContent = msg; s.cla
 let units = lsGet('units') || 'us';
 const isUS = () => units === 'us';
 const fmtTemp = f => Math.round(isUS() ? f : (f - 32) * 5 / 9) + '°';   // temps held in °F internally
-const fmtRain = inch => { if (isUS()) return inch.toFixed(2) + ' in';                 const mm = inch * 25.4; return mm.toFixed(mm < 1 ? 2 : 1) + ' mm'; }; // rain held in inches
+const fmtRain = inch => { if (isUS()) return inch.toFixed(2) + ' in';  const mm = inch * 25.4; return mm.toFixed(mm < 1 ? 2 : 1) + ' mm'; }; // rain held in inches
 // numeric twin of fmtRain's precision — chart heights snap to it, so two hours that
 // display the same amount never draw different heights
-const roundRain = inch => { if (isUS()) return +inch.toFixed(2);                   const mm = inch * 25.4; return +mm.toFixed(mm < 1 ? 2 : 1) / 25.4; };
-const fmtArea = km2 => { const v = isUS() ? km2 * 0.386102 : km2;                return v.toFixed(v < 10 ? 2 : 1) + (isUS() ? ' mi²' : ' km²'); };
+const roundRain = inch => { if (isUS()) return +inch.toFixed(2);  const mm = inch * 25.4; return +mm.toFixed(mm < 1 ? 2 : 1) / 25.4; };
+const fmtArea = km2 => { const v = isUS() ? km2 * 0.386102 : km2;  return v.toFixed(v < 10 ? 2 : 1) + (isUS() ? ' mi²' : ' km²'); };
 const fmtDist = m => isUS()
   ? (m < 305 ? Math.round(m * 3.28084) + ' ft' : (m / 1609.34).toFixed(m < 1609 ? 2 : 1) + ' mi')
   : (m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km');
+const fmtElev = m => isUS() ? Math.round(m * 3.28084) + ' ft' : Math.round(m) + ' m';
 function compass(bearing) {
   return ['N','NE','E','SE','S','SW','W','NW'][Math.round(((bearing + 360) % 360) / 45) % 8];
 }
@@ -487,13 +502,20 @@ let appLayersAdded = false;
 map.on('styledata', () => {
   if (appLayersAdded) return;
   appLayersAdded = true;
-  for (const id of ['basin', 'flowline', 'fcast', 'points']) map.addSource(id, { type: 'geojson', data: EMPTY });
+  for (const id of ['basin', 'flowline', 'route', 'fcast', 'points']) map.addSource(id, { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'basin-fill', type: 'fill', source: 'basin',
     paint: { 'fill-color': '#3080f9', 'fill-opacity': 0.22 } });
   map.addLayer({ id: 'basin-line', type: 'line', source: 'basin',
     paint: { 'line-color': '#1a5fd0', 'line-width': 2 } });
   map.addLayer({ id: 'flowline', type: 'line', source: 'flowline',
     paint: { 'line-color': '#00b0d0', 'line-width': 2.5 } });
+  map.addLayer({ id: 'route', type: 'line', source: 'route',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: { 'line-color': '#d1198f', 'line-width': 3 } });
+  map.addLayer({ id: 'route-pts', type: 'circle', source: 'route',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: { 'circle-radius': 3.5, 'circle-color': '#d1198f',
+      'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
   map.addLayer({ id: 'fcast', type: 'circle', source: 'fcast',
     paint: { 'circle-radius': 5, 'circle-color': '#8b2fd0',    'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
   map.addLayer({ id: 'snap-move', type: 'line', source: 'points',
@@ -587,7 +609,8 @@ function parseHash() {
 // does. A name containing ';' or ',' arrives as %3B / %2C and would otherwise split the
 // wrong field. Same validation as parseHash on every entry; bad entries are dropped, not
 // fatal, so one mangled pin doesn't cost the recipient the rest of the link.
-const MAX_IMPORT = 500;  // the fragment is attacker-controlled and this WRITES to their                // saved pins — bound how much a link can stuff into localStorage
+const MAX_IMPORT = 500;  // the fragment is attacker-controlled and this WRITES to their
+                // saved pins — bound how much a link can stuff into localStorage
 function parsePinsHash() {
   const raw = location.hash.slice(1);
   if (!/^pins:/i.test(raw)) return null;
@@ -607,7 +630,7 @@ function parsePinsHash() {
 }
 const pinKey = p => `${p.lat},${p.lon}`;
 // ---------- unpublished spots ----------
-// The marker lives IN the name (a leading Ω, the same sigil convention as deprecated code),
+// The marker lives IN the name (a leading Ω),
 // not in a separate stored field: it then travels through the fragment, share links,
 // exports, KML titles and the recipient's saved pins for free, and there is no second piece
 // of state that can drift out of sync with the name. Cost: an unnamed spot can't be marked
@@ -708,18 +731,294 @@ function routeFromHash() {
   });
 }
 window.addEventListener('hashchange', routeFromHash);
+// ---------- trace the canyon: a polyline whose bottom end becomes the pour point ----------
+// A drainage is taken at ONE point, and WHICH point is the whole question: tap where you
+// drop in and every tributary joining below is missing from the answer, so the number you
+// read is smaller than the water you'll be standing in. Second way in, then: trace the
+// canyon and take the pour point at the BOTTOM end of the trace.
+//
+// The line is NOT an input to the delineation. The catchment of the bottom point already
+// contains the whole route and every confluence along it, so there is nothing to compute
+// from the other vertices — this resolves to one lat/lon and then goes through the fragment
+// exactly like a tap. `delineate()` and everything downstream never learn this mode exists;
+// do not give the polyline a delineation path of its own.
+//
+// What the line does buy is a CHECK the single tap can't give: the route has to lie inside
+// the basin that comes back (see renderBasinInfo). That catches a snap onto the wrong
+// channel, and — the one that matters — a line traced bottom-to-top, which puts the pour
+// point at the TOP and understates the drainage. Understating is the dangerous direction.
+//
+// Deliberately NOT here: elevation lookups to find the low end regardless of trace
+// direction (a new flaky service for something the containment check already surfaces
+// loudly), and the route in the share link — the fragment carries the pour point only and
+// the recipient recomputes, per "Share the pour point, not the polygon".
+let route = null;      // finished trace [[lon,lat],…] — kept only for the containment check
+let drawPts = null;    // non-null while the user is tracing
+function syncDraw() {
+  const n = drawPts ? drawPts.length : 0;
+  $('btn-draw').textContent = !drawPts ? '✏ Draw the canyon' : n < 2 ? 'Cancel' : `Done — ${n} points`;
+  $('draw-note').textContent = drawPts
+    ? 'Tap along the canyon from the TOP down to where you walk out, then press Done. The drainage is taken at your LAST point.'
+    : '';
+}
+function drawRoute() {
+  const pts = drawPts || route || [];
+  setData('route', { type: 'FeatureCollection', features: [
+    ...(pts.length > 1 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pts } }] : []),
+    ...pts.map(c => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } }))
+  ] });
+}
+function endDraw() {   // leave draw mode, keep whatever `route` holds
+  if (!drawPts) return;
+  drawPts = null;
+  map.doubleClickZoom.enable();
+  syncDraw();
+}
+function clearRoute() {
+  endDraw();
+  route = null;
+  setData('route', EMPTY);
+  if ($('seg-pick').options.length) $('seg-pick').selectedIndex = 0;   // nothing drawn, nothing chosen
+}
+// Both ways in end here: a traced line (pour point = its last vertex) and an imported
+// segment (pour point = its low end). Everything after this point is the tap pipeline.
+function useRoute(coords, pour) {
+  route = coords;
+  drawRoute();
+  const lat = +pour[1].toFixed(5), lon = +pour[0].toFixed(5);
+  // when the pour point is where it already was, no hashchange fires and nothing
+  // re-renders — but the route check IS new, so redraw the info panel by hand
+  const same = cur && !cur.failed && cur.lat === lat && cur.lon === lon;
+  goTo(lat, lon);
+  if (same && cur.basin) renderBasinInfo();
+}
+function finishDraw() {
+  const pts = drawPts;
+  endDraw();
+  if (!pts || pts.length < 2) { clearRoute(); return; }   // one tap or none — a plain cancel
+  useRoute(pts, pts[pts.length - 1]);
+}
+$('btn-draw').onclick = () => {
+  if (drawPts) return finishDraw();
+  clearRoute();
+  drawPts = [];
+  map.doubleClickZoom.disable();   // a quick double tap while tracing must not zoom the map
+  syncDraw();
+};
+document.addEventListener('keydown', e => {
+  if (!drawPts) return;   // only while tracing — Enter otherwise belongs to the name box
+  if (e.key === 'Enter') finishDraw();
+  else if (e.key === 'Escape') clearRoute();
+});
+// A tap and a finished trace both end the same way: put the point in the fragment and let
+// routeFromHash do the work, so the back button works and there is only one way in.
+function goTo(lat, lon) {
+  if (cur && !cur.failed && cur.lat === lat && cur.lon === lon) return;
+  const h = `${lat},${lon}`;
+  if (location.hash === '#' + h) routeFromHash();   // retry after a failure — same hash fires no hashchange
+  else location.hash = h;
+}
+// ---------- import a canyon's KML / GPX and pick its descent ----------
+// A ropewiki page publishes the canyon as KML/GPX, split into named segments (Approach,
+// Class 2 Section, Connector, Class 3 Section, Exit for Keyhole) chained head-to-tail in
+// travel order. That segmentation is the one thing every file has; the LABELS are not,
+// and neither is anything else people hoped to key off:
+//
+//  - **The files carry no elevation.** Ropewiki's GPX writes <ele>0.000</ele> on every
+//    point and its KML ends every coordinate in ",0". Measured, not assumed. So elevation
+//    has to be fetched (3DEP below), and any plan that reads it out of the file is dead.
+//  - **Line COLOUR is a real signal but only in KML.** Keyhole's two technical segments
+//    are both #A52714 while approach/connector/exit are green/olive/yellow, and the style
+//    id even embeds the RGB. GPX drops styles entirely, so a colour rule would work on
+//    half the inputs. Not used.
+//  - **"Lowest point of the whole route" is catastrophically wrong.** Keyhole's route
+//    minimum sits in the EXIT walk, down by Clear Creek: 64.84 km² against 3.42 km² at
+//    the true bottom of the technical section. 19× inflation — exactly the systemic
+//    inflation this app exists to avoid. Never pick the global minimum.
+//
+// So: don't classify. Rank the segments by measured net descent, pre-select the biggest,
+// and let the user change it in one click. For Keyhole that default lands on Class 3
+// Section, whose low end is the bottom of the technical part. The numbers are shown, so
+// the choice stays obvious even when a segment is called "Track 003".
+//
+// For scale, the error this whole feature fixes is modest and the error it could cause is
+// not: Keyhole reads 3.00 km² tapped at the top and 3.42 km² at the correct bottom (+14%),
+// against 19× for overshooting. When in doubt the pick must stay HIGH, not low.
+// A car shuttle or an access road descends MORE than the canyon it serves, and ranking by
+// total drop alone happily picks one. Measured over 178 archived ropewiki files: "biggest
+// net descent" chose a road or shuttle track in 14% of them — "Drive", "Dirt Road",
+// "Rimrock Shuttle", "Skyline Shuttle", "Approach Brennan Shuttle". Roads are graded and
+// canyons are not, so require a real slope. In that corpus the technical sections run
+// 11–23% (Keyhole 11, Deer Creek 16, Water Canyon 16–23, Birch Hollow 18) while the
+// offending shuttles sit at 1–5%, and sustained road grade almost never exceeds 8%.
+// Halves the error rate, 14% → 7%. What it gives up: genuinely low-gradient slots
+// (Orderville, Zebra) no longer auto-pick and fall through to "choose it yourself" — one
+// click, and never a wrong pour point. A softer version that falls back to max-drop when
+// nothing qualifies was measured too: +6 right, +2 wrong, more code. Not worth it here.
+const MIN_GRADE = 0.08;
+const MAX_SEGS = 60, MAX_PTS = 40000;   // a local file, but still someone else's bytes
+const MAX_FILE = 8 << 20;
+let segs = [];
+function parseTracks(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('not valid XML');
+  // tag lookups are namespace-agnostic: KML and GPX both default-namespace their root, and
+  // some writers emit prefixed elements (<kml:LineString>) that a plain name would miss
+  const tags = (el, t) => [...el.getElementsByTagNameNS('*', t)];
+  const named = el => (tags(el, 'name')[0]?.textContent || '').trim().slice(0, 60);
+  const inRange = c => Number.isFinite(c[0]) && Number.isFinite(c[1]) &&
+    c[1] >= -90 && c[1] <= 90 && c[0] >= -180 && c[0] <= 180;
+  const out = [];
+  let budget = MAX_PTS;
+  const push = (name, coords) => {
+    if (out.length >= MAX_SEGS || coords.length < 2) return;
+    budget -= coords.length;
+    if (budget < 0) return;
+    out.push({ name: name || `Section ${out.length + 1}`, coords });
+  };
+  // KML: one segment per LineString, named by the Placemark that owns it
+  for (const ls of tags(doc, 'LineString')) {
+    const raw = tags(ls, 'coordinates')[0]?.textContent || '';
+    let owner = ls;
+    while (owner && owner.localName !== 'Placemark') owner = owner.parentNode;
+    push(owner ? named(owner) : '',
+      raw.trim().split(/\s+/).map(t => t.split(',').slice(0, 2).map(Number)).filter(inRange));
+  }
+  // GPX: one segment per <trkseg> (named by its parent <trk>) and per <rte>
+  for (const t of ['trkseg', 'rte']) for (const seg of tags(doc, t)) {
+    const pts = [...seg.children]
+      .filter(n => n.localName === 'trkpt' || n.localName === 'rtept')
+      .map(n => [Number(n.getAttribute('lon')), Number(n.getAttribute('lat'))])
+      .filter(inRange);
+    push(named(t === 'trkseg' ? seg.parentNode : seg), pts);
+  }
+  if (!out.length) throw new Error('no tracks or routes in this file');
+  return out;
+}
+// USGS 3DEP, one request for every point, CORS-open, 1 m resolution. Two samples per
+// segment, not every vertex: endpoints reproduce the full-profile net-drop ranking exactly
+// (checked against all 110 of Keyhole's vertices), and on a DESCENDING segment the low end
+// IS an endpoint — only the approach and exit dip below theirs, and those are what we're
+// ranking away from.
+// ponytail: endpoints only. If a canyon ever needs a mid-segment low, sample every vertex
+// of the chosen segment after it is picked, not all of them up front.
+const ELEV = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples';
+async function sampleElev(pts) {
+  const q = new URLSearchParams({
+    geometry: JSON.stringify({ points: pts, spatialReference: { wkid: 4326 } }),
+    geometryType: 'esriGeometryMultipoint', returnFirstValueOnly: 'true', f: 'json' });
+  const d = await fetchRetry(`${ELEV}?${q}`, undefined, 2);
+  const out = new Array(pts.length).fill(null);
+  // a point outside 3DEP coverage comes back missing or as "NoData" — null, never 0, or a
+  // gap in the DEM would read as sea level and win every ranking
+  for (const smp of d.samples || []) {
+    const v = Number(smp.value), i = smp.locationId;
+    if (Number.isFinite(v) && i >= 0 && i < out.length) out[i] = v;
+  }
+  return out;
+}
+// the gradient is the number that separates a canyon from a road, so show it: it lets the
+// reader do by eye exactly what the ranking does
+function segLabel(s) {
+  return `${s.name} — ${fmtDist(s.km * 1000)}`
+    + (s.drop == null ? '' : `, ${s.drop >= 0 ? '↓' : '↑'} ${fmtElev(Math.abs(s.drop))}`
+        + (s.grade == null ? '' : ` (${Math.abs(s.grade * 100).toFixed(0)}%)`));
+}
+function renderSegPicker(best) {
+  const sel = $('seg-pick');
+  sel.textContent = '';
+  const head = document.createElement('option');
+  head.value = '';
+  head.textContent = best < 0 ? 'Which section is the descent?' : 'Change the section…';
+  sel.appendChild(head);
+  segs.forEach((sg, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = segLabel(sg);   // names come from the file — textContent, never markup
+    sel.appendChild(o);
+  });
+  $('import-box').hidden = false;
+  if (best >= 0) sel.selectedIndex = best + 1;
+}
+$('seg-pick').onchange = e => {
+  const i = Number(e.target.value);
+  if (!e.target.value || !segs[i]) { clearRoute(); return; }
+  useRoute(segs[i].coords, segs[i].low);
+};
+async function loadTrackFile(file) {
+  clearRoute();
+  segs = [];
+  $('import-box').hidden = true;
+  const note = $('import-note');
+  const say = (msg, cls) => { note.textContent = msg; note.className = cls || 'note'; };
+  say(`Reading ${file.name}…`);
+  try {
+    if (file.size > MAX_FILE) throw new Error(`file is ${(file.size / (1 << 20)).toFixed(1)} MB (limit 8 MB)`);
+    segs = parseTracks(await file.text());
+    for (const sg of segs) sg.km = turf.length({ type: 'LineString', coordinates: sg.coords });
+    let ele = null;
+    try {
+      ele = await sampleElev(segs.flatMap(sg => [sg.coords[0], sg.coords[sg.coords.length - 1]]));
+    } catch { /* the picker still works off names and lengths — see the note below */ }
+    segs.forEach((sg, i) => {
+      const a = ele?.[2 * i], b = ele?.[2 * i + 1];
+      sg.drop = (a != null && b != null) ? a - b : null;         // positive = runs downhill
+      sg.grade = (sg.drop != null && sg.km > 0) ? sg.drop / (sg.km * 1000) : null;
+      // without elevation, fall back to the traced-line convention: files are written in
+      // travel order, so the last point is the downstream end
+      sg.low = (sg.drop != null && sg.drop < 0) ? sg.coords[0] : sg.coords[sg.coords.length - 1];
+    });
+    // the biggest measured descent among sections steep enough to be a canyon at all
+    // (>= MIN_GRADE implies it descends, so there is no separate sign test)
+    let best = -1;
+    segs.forEach((sg, i) => { if (sg.grade >= MIN_GRADE && (best < 0 || sg.drop > segs[best].drop)) best = i; });
+    renderSegPicker(best);
+    if (best >= 0) {
+      useRoute(segs[best].coords, segs[best].low);
+      say(`${segs.length} section${segs.length === 1 ? '' : 's'} in ${file.name}. Using “${segs[best].name}” — the steepest descent, so its bottom end is the pour point. Wrong section? Pick another.`);
+    } else {
+      // Nothing qualified: pick nothing rather than guess. A silently wrong pour point is
+      // the failure this whole feature exists to prevent. The two reasons are different
+      // and the note has to say which, or the reader can't tell a dead elevation service
+      // from a canyon that is simply too gentle to call automatically.
+      const ranked = segs.some(sg => sg.drop != null);
+      const n = `${segs.length} section${segs.length === 1 ? '' : 's'} in ${file.name}`;
+      say(ranked
+        ? `${n}, but none of them drops at ${Math.round(MIN_GRADE * 100)}% or steeper, so none is obviously the technical part — by total drop alone a graded road or a gentle wash looks just like a canyon. Pick the descent yourself; the drainage is taken at its far end.`
+        : `${n}, but the elevation lookup gave nothing to rank them by — choose the descending section yourself. The drainage is taken at its far end.`, 'warn');
+    }
+  } catch (e) {
+    say(`Could not use ${file.name}: ${e.message}`, 'warn');
+  }
+}
+$('btn-import').onclick = () => $('file-track').click();
+$('file-track').onchange = e => {
+  const f = e.target.files[0];
+  e.target.value = '';   // so re-picking the same file fires change again
+  if (f) loadTrackFile(f);
+};
+// drop anywhere on the page. dragover must preventDefault or no drop event fires at all,
+// and without it the browser navigates away to the dropped KML.
+for (const ev of ['dragover', 'drop']) document.addEventListener(ev, e => {
+  if (locked) return;   // a beta embed's pour point comes from the URL, full stop
+  e.preventDefault();
+  const f = ev === 'drop' && e.dataTransfer?.files?.[0];
+  if (f) loadTrackFile(f);
+});
+
 const markerAt = pt => map.getLayer('points') &&
   map.queryRenderedFeatures(pt, { layers: ['points'] }).some(f => f.properties.role);
 map.on('click', e => {
   if (locked) return;   // the pour point came from the URL and stays there
-  if (map.getLayer('fcast') && map.queryRenderedFeatures(e.point, { layers: ['fcast'] }).length) return;
-  if (markerAt(e.point)) return;   // the tap and pour-point markers open forecast popups instead
   const ll = e.lngLat.wrap();   // a click on a wrapped world copy must stay in [-180,180]
   const lat = +ll.lat.toFixed(5), lon = +ll.lng.toFixed(5);
-  if (cur && !cur.failed && cur.lat === lat && cur.lon === lon) return;
-  const h = `${lat},${lon}`;
-  if (location.hash === '#' + h) routeFromHash();   // retry after a failure — same hash fires no hashchange
-  else location.hash = h;  // routeFromHash does the work → back button works
+  // while tracing, every tap is a vertex — no delineation, and the marker/forecast-spot
+  // guards below don't apply: a vertex may legitimately land on top of either
+  if (drawPts) { drawPts.push([lon, lat]); drawRoute(); syncDraw(); return; }
+  if (map.getLayer('fcast') && map.queryRenderedFeatures(e.point, { layers: ['fcast'] }).length) return;
+  if (markerAt(e.point)) return;   // the tap and pour-point markers open forecast popups instead
+  clearRoute();   // this tap moves the pour point somewhere the old trace no longer describes
+  goTo(lat, lon);
 });
 function forecastPopup(coords, label, url) {
   const a = document.createElement('a');
@@ -954,6 +1253,23 @@ function renderBasinInfo() {
     t.className = 'note';
     t.textContent = `To get the drainage for where you actually are: zoom in and tap directly on a blue stream line. Landing even ${fmtDist(100)} away is often too far for the app to find the channel you meant.`;
     info.appendChild(t);
+  }
+  // The traced route is a check on the answer, not an input to it: everything upstream of
+  // the pour point is inside the basin by construction, so a vertex OUTSIDE means either
+  // the snap found the wrong channel or the line was traced bottom-to-top — which put the
+  // pour point at the TOP and understates the drainage. The last vertex IS the pour point
+  // and sits ON the boundary, so one point out is normal and says nothing.
+  if (route && route.length > 1) {
+    const out = route.filter(c => !turf.booleanPointInPolygon(c, basin)).length;
+    if (out > 1) {
+      const w = document.createElement('div');
+      const most = out > route.length / 2;
+      w.className = most ? 'warn' : 'note';
+      w.textContent = most
+        ? `⚠ ${out} of the ${route.length} points you traced are OUTSIDE this drainage. If you traced from the bottom up, the pour point is at the wrong end and the real drainage is bigger — trace top-to-bottom, or tap the bottom of the canyon directly.`
+        : `${out} of the ${route.length} points you traced fall outside this drainage — normal where the walk out leaves the canyon, but check on the map that the part you're descending is inside the shaded area.`;
+      info.appendChild(w);
+    }
   }
   if (cur.reachHead && !cur.exact && !cur.split) {
     const w = document.createElement('div');
@@ -1451,6 +1767,10 @@ $('btn-clear').onclick = () => {
   cur = null;
   dimOld(false);
   history.replaceState(null, '', location.pathname + location.search);
+  clearRoute();
+  segs = [];
+  $('import-box').hidden = true;
+  $('import-note').textContent = '';
   for (const id of ['basin', 'flowline', 'fcast', 'points']) setData(id, EMPTY);
   $('title').textContent = 'Drainage';
   syncFbLoc();

@@ -341,3 +341,118 @@ test('saving a name that is already taken overrides that pin', async ({ page }) 
     { lat: 37.5, lon: -112.5, name: 'keeper' },
   ]);
 });
+
+// ---- tracing the canyon (polyline → pour point) ----
+// Helper: click real map pixels for a list of [lon,lat], the way a person traces.
+async function traceOnMap(page, coords) {
+  const box = await page.locator('#map canvas').boundingBox();
+  const px = await page.evaluate(cs => cs.map(c => { const p = map.project(c); return [p.x, p.y]; }), coords);
+  for (const [x, y] of px) await page.mouse.click(box.x + x, box.y + y);
+}
+
+test('traced line delineates at its BOTTOM end, and tracing does not delineate mid-trace', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact' });
+  await page.goto('/');
+  await page.evaluate(() => map.jumpTo({ center: [-112.9, 37.22], zoom: 9 }));
+  await page.locator('#btn-draw').click();
+  // top of the canyon first, bottom (the mocked tap point) last — all inside the mock basin
+  await traceOnMap(page, [[-112.9, 37.28], [-112.9, 37.24], [-112.9, 37.2]]);
+  expect(page.url()).not.toContain('#');            // vertices are vertices, not taps
+  await expect(page.locator('#basin-info')).toHaveText('Nothing delineated yet.');
+  await expect(page.locator('#btn-draw')).toHaveText('Done — 3 points');
+  const traced = await page.evaluate(() => drawPts.slice());
+  await page.locator('#btn-draw').click();
+  // the pour point is the LAST vertex, not the first — pixel rounding means we assert
+  // against what was actually traced rather than the nominal coordinates
+  const [lon, lat] = traced[traced.length - 1];
+  expect(page.url()).toContain(`#${lat},${lon}`);
+  expect(lat).toBeLessThan(traced[0][1]);            // and that end is the downhill one
+  await expect(page.locator('#status')).toHaveText(/^Done\. Exact drainage/, { timeout: 15000 });
+  await expect(page.locator('#basin-info .warn')).toHaveCount(0);   // route is inside the basin
+  await expect(page.locator('#btn-draw')).toHaveText(/Draw the canyon/);
+});
+
+test('a line traced bottom-to-top is caught: most of the route falls outside the drainage', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact' });
+  await page.goto('/');
+  await page.evaluate(() => map.jumpTo({ center: [-112.9, 37.3], zoom: 8 }));
+  // mock basin spans lat 37.15–37.3, so 37.45/37.5 are outside it: the shape a
+  // backwards trace makes — the pour point lands at the top and the canyon is elsewhere
+  await page.locator('#btn-draw').click();
+  await traceOnMap(page, [[-112.9, 37.5], [-112.9, 37.45], [-112.9, 37.2]]);
+  await page.locator('#btn-draw').click();
+  await expect(page.locator('#basin-info .warn'))
+    .toContainText('2 of the 3 points you traced are OUTSIDE', { timeout: 15000 });
+  await expect(page.locator('#basin-info .warn')).toContainText('traced from the bottom up');
+  // and a plain tap afterwards drops the stale trace along with its warning
+  await page.locator('#btn-clear').click();
+  expect(await page.evaluate(() => route)).toBeNull();
+});
+
+// ---- importing a canyon's KML / GPX ----
+// tests/fixtures/canyon.{kml,gpx} hold the same 5 sections against mock.js's synthetic
+// terrain (north = higher, 300 m per 0.01 deg). Approach climbs; Slot drops 180 m at 26%;
+// Big Drop drops 360 m at 27%; Exit drops 60 m at 14%; Shuttle drops 600 m — the LARGEST
+// total drop in the file — but at only ~3.6%, because it is a road. Two documented traps
+// are encoded here:
+//   * the route's GLOBAL low point is lat 37.190, in Approach and Exit. Keyhole's real
+//     file behaves the same way, where taking the global minimum lands in the exit walk by
+//     Clear Creek and inflates the drainage 19x.
+//   * Shuttle wins on total drop and must lose to MIN_GRADE. Ranking by drop alone picked
+//     a road or shuttle in 14% of 178 archived ropewiki files.
+// Big Drop's far end, 37.192, is the right answer.
+for (const ext of ['kml', 'gpx']) {
+  test(`import ${ext}: the steepest descent is picked, and the pour point is its low end — not the route's global minimum`, async ({ page }) => {
+    await mockServices(page, { streamstats: 'exact' });
+    await page.goto('/');
+    await page.locator('#file-track').setInputFiles(`tests/fixtures/canyon.${ext}`);
+    await expect(page.locator('#seg-pick')).toBeVisible();
+    // every LineString/trkseg becomes a section; the Parking waypoint is not one
+    await expect(page.locator('#seg-pick option')).toHaveCount(6);   // 5 + the header
+    await expect(page.locator('#seg-pick')).toContainText('Big Drop');
+    expect(await page.locator('#seg-pick').inputValue()).toBe('2');  // Big Drop
+    // the Shuttle drops further than anything else and must still lose, on gradient alone
+    await expect(page.locator('#seg-pick option').nth(5)).toHaveText(/Shuttle .*↓ 1969 ft \(3%\)/);
+    await expect(page.locator('#seg-pick option').nth(3)).toHaveText(/Big Drop .*↓ 1181 ft \(27%\)/);
+    await expect(page.locator('#import-note')).toContainText('steepest descent');
+    expect(page.url()).toContain('#37.192,-112.904');                // NOT 37.19, the global min
+    await expect(page.locator('#status')).toHaveText(/^Done\./, { timeout: 15000 });
+    await expect(page.locator('#basin-info .warn')).toHaveCount(0);  // the section is inside its own basin
+  });
+}
+
+test('import: the section picker moves the pour point, and Clear puts the importer away', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact' });
+  await page.goto('/');
+  await page.locator('#file-track').setInputFiles('tests/fixtures/canyon.kml');
+  await expect(page.locator('#status')).toHaveText(/^Done\./, { timeout: 15000 });
+  await page.locator('#seg-pick').selectOption('1');                 // Slot instead
+  expect(page.url()).toContain('#37.204,-112.902');                  // Slot's low end
+  expect(await page.evaluate(() => route.length)).toBe(3);
+  await page.locator('#btn-clear').click();
+  await expect(page.locator('#import-box')).toBeHidden();
+  expect(await page.evaluate(() => [route, segs.length])).toEqual([null, 0]);
+});
+
+test('import: with no elevation to rank by, the app asks instead of guessing', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact', elev: 'nodata' });
+  await page.goto('/');
+  await page.locator('#file-track').setInputFiles('tests/fixtures/canyon.kml');
+  await expect(page.locator('#import-note')).toContainText('choose the descending section yourself');
+  await expect(page.locator('#import-note')).toHaveClass('warn');
+  expect(await page.locator('#seg-pick').inputValue()).toBe('');     // nothing pre-selected
+  expect(page.url()).not.toContain('#');                             // and nothing delineated
+  // labels still carry name and length, but no drop — there is none to show
+  await expect(page.locator('#seg-pick option').nth(1)).toHaveText(/^Test Canyon - Approach — [\d.]+ mi$/);
+});
+
+test('import: a file with no tracks fails loudly and by name', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/');
+  await page.locator('#file-track').setInputFiles({
+    name: 'empty.kml', mimeType: 'application/xml',
+    buffer: Buffer.from('<?xml version="1.0"?><kml><Document><name>x</name></Document></kml>'),
+  });
+  await expect(page.locator('#import-note')).toContainText('Could not use empty.kml: no tracks or routes');
+  await expect(page.locator('#import-note')).toHaveClass('warn');
+});

@@ -207,3 +207,23 @@ test('locked: before anyone touches the map, a pane resize does re-fit the basin
   });
   expect(box.basinLeft).toBeGreaterThanOrEqual(box.paneRight);   // refitted clear of the strip
 });
+
+test('locked: a dropped track file changes nothing — the pour point comes from the URL', async ({ page }) => {
+  const { requests } = await mockServices(page, { streamstats: 'exact', alerts: 'none' });
+  await page.goto('/?locked' + HASH);
+  await doneStatus(page);
+  const before = requests.filter(r => r.url.includes('linked-data') || r.url.includes('getSamples')).length;
+  // the button rides along with the hidden panel; the drop handler is on the document, so
+  // it needs its own `locked` guard and this is what proves the guard is there
+  await expect(page.locator('#btn-import')).toBeHidden();
+  const kml = require('fs').readFileSync('tests/fixtures/canyon.kml', 'utf8');
+  await page.evaluate(text => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([text], 'canyon.kml', { type: 'application/xml' }));
+    document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  }, kml);
+  await page.waitForTimeout(500);
+  expect(page.url()).toContain(encodeURI(HASH));                      // fragment untouched
+  expect(await page.evaluate(() => [route, segs.length])).toEqual([null, 0]);
+  expect(requests.filter(r => r.url.includes('linked-data') || r.url.includes('getSamples')).length).toBe(before);
+});
