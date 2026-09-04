@@ -51,8 +51,10 @@ the app looks fine.
   all accepted: an unnamed spot can't be marked without becoming named (`Ω` alone, which
   `label()` renders as `Ω lat, lon`); renaming a pin can strip the marker; and the
   saved-pin sort compares `bareName` so the Ω block is alphabetical inside itself. The
-  share hurdle is a `confirm()` in front of *both* share paths (`okToShareUnpub`) — the
-  point is only to stop the accidental share, never to prevent a deliberate one.
+  share hurdle is an in-page question in front of *both* share paths (`okToShareUnpub`,
+  via `askInPage`) — the point is only to stop the accidental share, never to prevent a
+  deliberate one, which is exactly why it stopped being a `confirm()`; see "Nothing asks
+  with a dialog".
 - **A route is an input affordance, not a second delineation path** (2026-09-02). Tracing
   a canyon, or importing its KML/GPX and picking a section, resolves to ONE lat/lon which
   then goes through the fragment exactly like a tap — both end at `useRoute()`.
@@ -74,7 +76,9 @@ the app looks fine.
   falls through to `parseUtm` when the pair is out of lat/lon range (327065 is not a
   latitude, so the two forms can't collide). Whitespace separates lat from lon *only* —
   everything after the next comma is the name, which legitimately holds spaces and
-  commas. DMS is deliberately **not** parsed: invalid beats a silently wrong decimal.
+  commas. A `/` counts as a separator too. DMS *is* parsed (2026-09-03) but only with a
+  `°` present — see the paste-box section; without the symbol it stays invalid, because
+  "37 13 17 N 112 57 36 W" has the shape of a decimal pair and of a UTM pair as well.
   `routeFromHash` canonicalizes the fragment to `#lat,lon,name` on every entry, because
   Share copies `location.href` and a tolerated paste would otherwise ship its `%20`s.
 - **UTM in 20 lines, not proj4** (2026-08-31). `utmToLatLon` is the Snyder USGS PP 1395
@@ -479,6 +483,72 @@ doesn't exist. The reason is `cf-mitigated: challenge`, which settles it technic
 only other argument is load on volunteer infrastructure at app scale — a courtesy call
 made here deliberately, not a restriction ropewiki stated.
 
+### Pasting a coordinate or a link (2026-09-03)
+
+The fourth way in, and the one that fixes a real dead end: **an installed PWA has no
+address bar** (user-flagged from the phone). Someone sends you a `#pins:` link with a
+season's worth of spots in it, and the installed app — the copy actually on the canyon
+trip — has nowhere to put it. One box takes both kinds of paste.
+
+- **A link is handled by putting its fragment back in the URL and re-entering
+  `routeFromHash`.** Everything a clicked link gets — the import prompt, `freshPins`
+  dedupe, the "already saved" count, canonicalization, the error text — is already
+  written once, there. `pasteGo` must never grow a delineation or an import path of its
+  own. The link may be a full URL, a bare `#…`, or a bare `pins:…`; a query string is
+  ignored, since `?locked` is a load-time flag.
+- **A coordinate goes into the fragment RAW, not as the pair just parsed out of it.**
+  `parseCoord` runs first to reject junk without dirtying the URL, and then the original
+  text is what gets set — so `routeFromHash` re-parses it and a UTM paste still produces
+  its "zone 12 assumed from the map view" note. Handing over the parsed decimal pair
+  instead would silently drop that note, which is the one line standing between a
+  zone-less paste and a point 450 km sideways.
+- **"Starts like a link" decides, not "contains a #".** `37.2,-112.9,Site #3` is a
+  legitimate coordinate whose *name* has a `#` in it.
+- **DMS needs its `°`.** `37°14'13.5"N 112°56'58.5"W`, degrees-decimal-minutes, hemisphere
+  letter on either side, seconds optional, `/` or `,` between the halves. Without the
+  symbol the string is ambiguous with both other accepted forms, so it is refused — the
+  2026-08-31 rule ("invalid beats a silently wrong decimal") still holds, the symbol is
+  just what makes the read unambiguous enough to allow. Trailing junk after the second
+  half refuses the whole read rather than delineating the part that parsed.
+- Locked mode needs no code for this either: the panel is hidden and the box with it.
+
+### Nothing asks with a dialog (2026-09-03)
+
+The paste box's first outing found this the hard way: pasting a real 31-pin link saved
+nothing. Everything downstream was fine — `parsePinsHash` read all 31, `freshPins` kept
+all 31, forcing consent true wrote all 31 — **the modal was the whole failure**.
+`confirm()` is suppressed in an installed PWA and in an embedded webview, where it returns
+**false with no dialog at all**. So a dialog there does not ask, it silently *refuses* —
+and the app then declines an action the reader explicitly asked for. Same lesson the
+pin-rename inline input already learned about `prompt()`.
+
+The user's call on the unpublished-share gate settles the general rule: *"I'd rather be
+able to share unpublished without a prompt than not share at all."* A guard that cannot
+be answered is not a guard, it's an outage. **No `confirm()`/`alert()`/`prompt()` may gate
+an action in this app.** There are none left; `askInPage` is the only way it asks.
+
+- **`askInPage(el, question, yesLabel, noLabel)` → `Promise<boolean>`.** It renders the
+  question plus two buttons into `el` and clears it on the answer, so the caller's own
+  outcome line lands exactly where the question was. `el` is the caller's choice: the
+  nearest line to the button that raised it — `#ask` (top of the panel, under the status
+  line) for the pin import and the single share, `#pins-msg` (down in the pin row) for
+  the group share and the bulk delete. Both slots get the question styling from one CSS
+  rule (`#ask:not(:empty), #pins-msg:has(button)`).
+- **The import (`offerPins`) writes only inside that click**, so nothing reaches storage
+  before an answer, and it re-runs `freshPins` there, since the list can be edited by hand
+  while the question sits unanswered. It renders *after* the recursive `routeFromHash()`
+  and survives the delineation because `delineate()` owns `#status` only.
+- **Both share paths and the bulk delete** went the same way (`okToShareUnpub`,
+  `pins-del`). The unpublished friction is unchanged in substance — it still names the
+  spots and still takes a deliberate second click.
+- **Resolving on the click keeps the caller inside the user gesture** (the continuation
+  after `await` is a microtask of the click's own task), which is what
+  `navigator.clipboard.writeText` needs. Verified in Chromium with the permission
+  granted; **iOS Safari is the one to watch**, and if it ever refuses, the existing
+  `catch` prints the whole link in the status line to copy by hand. Not silent either
+  way — which is the entire point of this section.
+- `MAX_IMPORT`, per-field decoding and the dedupe are untouched; only the question moved.
+
 ## Concurrency invariants
 
 The three delineation paths (NLDI, StreamStats ×2 including the second-chance call,
@@ -569,10 +639,11 @@ The fragment is attacker-controlled ("someone sends you a link"):
 - Multi-pin links decode **per field**, never the whole hash — a name containing `;`
   or `,` would otherwise split the wrong field. One mangled pin is dropped, not fatal.
 - The pin import is the only path where the fragment *writes* to stored state: it
-  dedupes first (`freshPins`, against storage and itself; local name wins), asks via
-  `confirm()` naming up to 8 pins, and is bounded by `MAX_IMPORT = 500`. A sandboxed
-  iframe without `allow-modals` makes `confirm()` return false — the fail direction is
-  "don't write", which is correct. Declining still shows the first drainage.
+  dedupes first (`freshPins`, against storage and itself; local name wins), offers the
+  new ones in the page (`offerPins`, naming up to 6) and writes only on that click, and
+  is bounded by `MAX_IMPORT = 500`. Nothing is stored before the answer; "No thanks", a
+  hidden panel and an unanswered offer all leave storage untouched, and the first
+  drainage shows either way.
 - Export filenames come from the fragment: `exportName()` strips separators/control
   chars and leading dots (checked against `../../etc/passwd`, newlines, `<script>`).
 - KML escapes `& < > " '`; GeoJSON is `JSON.stringify`-safe. The single `innerHTML` is

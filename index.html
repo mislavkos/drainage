@@ -98,6 +98,12 @@
   #legend { font-size: 0.75rem; color: #666; margin-top: 4px; }
   .dot { font-size: 0.875rem; }
   #pin-name { width: 240px; margin: 4px 0 2px; }
+  /* every in-page question, wherever it renders (see askInPage) */
+  #ask:not(:empty), #pins-msg:has(button) { display: block; margin: 6px 0; padding: 6px 8px;
+                                            background: #eef; border-radius: 4px; color: #111; }
+  #paste-row { display: flex; gap: 4px; margin: 4px 0 2px; }
+  #paste-in { flex: 1; min-width: 0; }
+  #paste-row button { margin: 0; }
   /* mi ⇄ km switch */
   #chk-metric, #chk-big { appearance: none; width: 30px; height: 16px; border-radius: 8px; background: #bbb;       position: relative; cursor: pointer; vertical-align: text-bottom; margin: 0 5px; }
   #chk-metric:checked, #chk-big:checked { background: #1a5fd0; }
@@ -127,8 +133,11 @@
   </div>
   <div id="status">Tap a point on the map to see everything that drains to it.</div>
   <div id="coord-note" class="note"></div>
-  <!-- The three ways in are one operation, and nothing on screen said so (user-flagged
-       2026-09-02): three buttons read as three features. This deliberately does NOT explain
+  <!-- The panel's asking slot (see askInPage). Top of the panel, not down by the pin list
+       an import writes to: on a phone that list is a scroll away, and this is a question. -->
+  <div id="ask"></div>
+  <!-- The ways in are one operation, and nothing on screen said so (user-flagged
+       2026-09-02): separate controls read as separate features. This deliberately does NOT explain
        what they do — it hooks them onto the status line directly above, which already says
        tapping shows what drains to a point, so "instead of tapping" inherits that whole
        sentence for free. A 25-word version naming the "pour point" was tried first and
@@ -142,6 +151,13 @@
   <div class="note" id="draw-note"></div>
   <div id="import-box" hidden><select id="seg-pick" aria-label="Which section is the descent"></select></div>
   <div class="note" id="import-note"></div>
+  <div id="paste-row">
+    <input id="paste-in" placeholder="paste a coordinate or a link"
+           enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false"
+           aria-label="Paste a coordinate or a drainage link">
+    <button id="btn-paste" title="Go to a pasted coordinate (decimal, degrees-minutes-seconds or UTM) or open a pasted drainage link">Go</button>
+  </div>
+  <div class="note" id="paste-note"></div>
   <div id="legend"><span class="dot" style="color:#666">●</span> your tap ·
     <span class="dot" style="color:#e08000">●</span> nearest stream ·
     <span class="dot" style="color:#8b2fd0">●</span> forecast spots</div>
@@ -206,9 +222,9 @@
       <li>When the NLDI fallback is used, the drainage is delineated from the next downstream confluence instead of the stream point closest to you. This can dramatically inflate the drainage area, because it includes ground below you, not just above.</li>
       <li>The rain chart covers the next 48 hours, hour by hour. Each hour shows the wettest forecast among several spots spread across the basin (NWS data), in the basin's own timezone.</li>
       <li>Active <a href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener">NWS</a> alerts are checked against the basin's actual shape — including zone-based alerts that carry no geometry of their own (most Flood Watches).</li>
-      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device.</li>
-      <li>Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) asks the recipient before adding them to their saved pins, skips any they already have, and delineates the first either way.</li>
-      <li>Tick <b>Ω unpublished</b> for a spot that isn't public beta. The Ω lives in the name, so it travels with every share link, export and saved pin; those pins sort together at the bottom of the list, and any share link containing one asks you to confirm before it reaches the clipboard.</li>
+      <li>Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device. Paste one into the box near the top — or a bare coordinate, in decimal, degrees-minutes-seconds or UTM — when there is no address bar to put it in, which is the case once the app is installed to a home screen.</li>
+      <li>Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) offers them at the top of the panel before anything is added to your saved pins, skips any you already have, and delineates the first either way.</li>
+      <li>Tick <b>Ω unpublished</b> for a spot that isn't public beta. The Ω lives in the name, so it travels with every share link, export and saved pin; those pins sort together at the bottom of the list, and any share link containing one asks you here in the panel before it reaches the clipboard.</li>
       <li>Export the basin as GeoJSON or KML for GaiaGPS, CalTopo, or Google Earth.</li>
       </ul>
 
@@ -563,7 +579,7 @@ function utmToLatLon(zone, E, N) {
 // looking at the ground the coordinates came from. The note it returns says so out loud:
 // a wrong zone lands ~450 km sideways, and the only defence is telling you which was used.
 function parseUtm(raw) {
-  const m = /^[\s(]*(?:(\d{1,2})\s*([A-Z])?[\s,]+)?(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?[\s,]+(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?\s*\)?(?:\s*,(.*))?$/is.exec(raw);
+  const m = /^[\s(]*(?:(\d{1,2})\s*([A-Z])?[\s,\/]+)?(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?[\s,\/]+(\d{4,7}(?:\.\d+)?)\s*m?\s*([EN])?\s*\)?(?:\s*,(.*))?$/is.exec(raw);
   if (!m) return null;
   const band = m[2]?.toUpperCase();
   if (band && band < 'N') return null;      // C–M are southern bands; see utmToLatLon
@@ -580,27 +596,62 @@ function parseUtm(raw) {
       + (guessed ? ` Zone ${zone} assumed from the map view.` : '')
       + ' Beta on an old NAD27 quad lands ~200 m off.' };
 }
+// Degrees-minutes-seconds, and degrees-decimal-minutes: "37°14'13.5\"N 112°56'58.5\"W",
+// "N37° 14.225' / W112° 56.975'", either hemisphere marker on either side, seconds
+// optional. A ° is REQUIRED in both halves: "37 14 13.5 N 112 56 58 W" has the same shape
+// as a decimal pair AND as a UTM pair, and a wrong guess among those three lands a state away,
+// so the symbol is what makes the read unambiguous. Sign comes from S/W, or a leading minus.
+const DMS_RE = /([NSEW])?\s*(-?\d+(?:\.\d+)?)\s*[°º]\s*(?:(\d+(?:\.\d+)?)\s*['′’]?\s*(?:(\d+(?:\.\d+)?)\s*["″”]?)?)?\s*([NSEW])?/gi;
+function parseDms(raw) {
+  DMS_RE.lastIndex = 0;
+  const a = DMS_RE.exec(raw), b = a && DMS_RE.exec(raw);
+  if (!b) return null;
+  // anything trailing that isn't a name refuses the whole read, rather than delineating
+  // the half of it that happened to parse
+  const tail = raw.slice(DMS_RE.lastIndex).trim();
+  if (tail && !tail.startsWith(',')) return null;
+  const val = m => {
+    const min = Number(m[3] || 0), sec = Number(m[4] || 0);
+    if (min >= 60 || sec >= 60) return null;
+    const h = (m[1] || m[5] || '').toUpperCase();
+    const v = Math.abs(Number(m[2])) + min / 60 + sec / 3600;
+    return { v: (m[2][0] === '-' || h === 'S' || h === 'W') ? -v : v, h };
+  };
+  const p = val(a), q = val(b);
+  if (!p || !q) return null;
+  // hemisphere markers say which field is which; without them the first is the latitude,
+  // the same convention the decimal form already uses
+  const [y, x] = (p.h === 'E' || p.h === 'W' || q.h === 'N' || q.h === 'S') ? [q, p] : [p, q];
+  const lat = +y.v.toFixed(5), lon = +x.v.toFixed(5);
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon, name: tail.slice(1).trim().slice(0, 100) || undefined };
+}
 function parseHash() {
   // a link truncated mid-percent-escape (messaging apps do this) must read as
   // invalid, not throw out of the hashchange handler
   let raw;
   try { raw = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
-  if (!raw) return null;
+  return raw ? parseCoord(raw) : null;
+}
+// One parser for every way a coordinate arrives — the fragment and the paste box both
+// land here, so whatever a share link tolerates, the box tolerates too, for free.
+function parseCoord(raw) {
   // Coordinates arrive pasted from everywhere: "37.2, -112.9", "37.2 -112.9",
   // "(+37.2°, -112.9°)", a unicode minus out of a PDF. Requiring DIGITS in both fields is
   // also what kills the Number('') is 0 trap — a blank field would delineate Null Island,
   // and the range check can't catch that because 0,0 is valid. Whitespace separates lat
   // from lon ONLY: everything after the next comma is the name, which may legitimately
-  // hold spaces and commas ("Right Fork, upper entrance"). Degrees-minutes-seconds is not
-  // accepted — it reads as invalid rather than as some silently wrong decimal.
-  const m = /^[\s(]*([+-]?\d*\.?\d+)\s*°?\s*[,\s]\s*([+-]?\d*\.?\d+)\s*°?\s*\)?(?:\s*,(.*))?$/s
+  // hold spaces and commas ("Right Fork, upper entrance"). Anything this shape refuses
+  // falls through to DMS and then UTM, in that order; a shape none of the three claims
+  // reads as invalid rather than as some silently wrong decimal.
+  const m = /^[\s(]*([+-]?\d*\.?\d+)\s*°?\s*[,\s\/]\s*([+-]?\d*\.?\d+)\s*°?\s*\)?(?:\s*,(.*))?$/s
     .exec(raw.replace(/[\u2212\u2013\u2014]/g, '-'));
-  if (!m) return parseUtm(raw);
+  if (!m) return parseDms(raw) || parseUtm(raw);
   const lat = Number(m[1]), lon = Number(m[2]);
   // out of range here is not necessarily junk: a UTM pair matches the decimal shape too
   // (numbers separated by a space or comma), and 327065 is simply not a latitude
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return parseUtm(raw);
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return parseDms(raw) || parseUtm(raw);
   const name = m[3]?.trim().slice(0, 100) || undefined;
   return { lat, lon, name };
 }
@@ -638,17 +689,39 @@ const pinKey = p => `${p.lat},${p.lon}`;
 const UNPUB = 'Ω';
 const isUnpub = n => (n || '').trimStart().startsWith(UNPUB);
 const bareName = n => isUnpub(n) ? (n || '').trimStart().slice(UNPUB.length).trim() : (n || '');
+// ---------- asking, in the page ----------
+// Every question this app asks goes through here, and not one of them is a browser dialog
+// (2026-09-03). A modal is suppressed in an installed PWA and in an embedded webview, where
+// confirm() returns false with no dialog at all — so the app refuses an action the reader
+// did ask for, silently. That cost a 31-pin import (reported from the phone), and it made
+// sharing an unpublished spot impossible there, which is worse than sharing it without a
+// question. Nothing in this app may gate an action on a dialog; ask here instead.
+//
+// `el` is the line the question replaces, so the answer lands where the question was — pass
+// the one nearest the button that raised it. Resolving on the click keeps the caller inside
+// the user gesture (a microtask later), which `navigator.clipboard` requires.
+function askInPage(el, question, yesLabel, noLabel = 'Cancel') {
+  el.textContent = question + ' ';
+  el.scrollIntoView({ block: 'nearest' });
+  return new Promise(resolve => {
+    const btn = (label, answer) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.onclick = () => { el.textContent = ''; resolve(answer); };
+      return b;
+    };
+    el.append(btn(yesLabel, true), btn(noLabel, false));
+  });
+}
 // Sharing an unpublished canyon's location is a real-world disclosure, so it can't ride on
-// one stray click. Deliberate sharing still works — this only makes the accidental kind
-// hard. A sandboxed iframe without allow-modals makes confirm() return false with no
-// dialog; the fail direction is "don't copy", which is the right one.
-function okToShareUnpub(names) {
+// one stray click. Deliberate sharing still works — this only makes the accidental kind hard.
+function okToShareUnpub(el, names) {
   if (!names.length) return true;
   const shown = names.slice(0, 8);
-  return confirm(`This link gives away ${names.length} unpublished spot${names.length === 1 ? '' : 's'}:`
-    + `\n\n${shown.join('\n')}`
-    + (names.length > shown.length ? `\n…and ${names.length - shown.length} more` : '')
-    + `\n\nSend it only to people you'd hand the beta to. Copy the link?`);
+  return askInPage(el, `This link gives away ${names.length} unpublished spot${names.length === 1 ? '' : 's'}: `
+    + shown.join(' · ')
+    + (names.length > shown.length ? ` · and ${names.length - shown.length} more` : '')
+    + `. Send it only to people you'd hand the beta to.`, 'Copy the link');
 }
 // the name box and the Ω tickbox are two views of one value — always set them together
 function setNameField(v) {
@@ -658,12 +731,34 @@ function setNameField(v) {
 // Which of `incoming` aren't saved yet — deduped against storage AND against itself, so a
 // link that repeats a coordinate counts it once. Keeping the LOCAL name on a collision is
 // the point: the recipient's own label for a spot they already saved beats the sender's.
-// This runs BEFORE the confirm, so the dialog can only ever offer genuinely new pins.
+// This runs BEFORE the offer, so the reader is only ever asked about genuinely new pins.
 function freshPins(incoming) {
   const have = new Set((lsGet('pins') || []).map(pinKey));
   const out = [];
   for (const p of incoming) if (!have.has(pinKey(p))) { out.push(p); have.add(pinKey(p)); }
   return out;
+}
+// A link writing to their saved pins is the one place the fragment changes stored state, so
+// it asks first — about the NEW ones only, and the first pin is delineated either way, which
+// costs nothing and is what they clicked for.
+//
+// It asks through askInPage, never a dialog — see there for why.
+async function offerPins(fresh, already) {
+  const box = $('ask');
+  const say = t => { box.textContent = t; };
+  if (!fresh.length) return say('Every pin in this link was already saved.');   // nothing to ask
+  const n = fresh.length, pins = `pin${n === 1 ? '' : 's'}`;
+  const names = fresh.slice(0, 6).map(p => p.name || `${p.lat},${p.lon}`);
+  const ok = await askInPage(box, `This link has ${n} new ${pins}: ${names.join(' · ')}`
+    + (n > names.length ? ` · and ${n - names.length} more` : '') + '.'
+    + (already ? ' ' + already : ''), `Add ${n} ${pins}`, 'No thanks');
+  if (!ok) return say('Pins from this link were not added.');
+  // re-deduped at the click, not at the offer: the list may have been saved by hand while
+  // the question sat here waiting for an answer
+  const put = freshPins(fresh);
+  lsSet('pins', (lsGet('pins') || []).concat(put));
+  renderPins();
+  say(`Added ${put.length} ${pins} from this link.` + (already ? ' ' + already : ''));
 }
 function routeFromHash() {
   const imported = parsePinsHash();
@@ -672,33 +767,14 @@ function routeFromHash() {
     const fresh = freshPins(imported);
     const dup = imported.length - fresh.length;
     const already = dup ? `${dup} ${dup === 1 ? 'was' : 'were'} already saved.` : '';
-    let msg;
-    if (!fresh.length) {
-      msg = 'Every pin in this link was already saved.';   // nothing to write, nothing to ask
-    } else {
-      // A link writing to their saved pins is the one place the fragment changes stored
-      // state, so it asks first — about the NEW ones only. Declining still shows the first
-      // drainage: that costs nothing and is what they clicked for. NOTE: a sandboxed iframe
-      // without allow-modals makes confirm() return false with no dialog; the fail direction
-      // is "don't write", which is the right one.
-      const names = fresh.slice(0, 8).map(p => p.name || `${p.lat},${p.lon}`);
-      const ok = confirm(`Add ${fresh.length} new pin${fresh.length === 1 ? '' : 's'} to your saved list?`
-        + `\n\n${names.join('\n')}`
-        + (fresh.length > names.length ? `\n…and ${fresh.length - names.length} more` : '')
-        + (already ? `\n\n${already}` : '') + `\n\nEither way, the first one opens.`);
-      if (ok) { lsSet('pins', (lsGet('pins') || []).concat(fresh)); renderPins(); }
-      msg = ok ? `Added ${fresh.length} pin${fresh.length === 1 ? '' : 's'} from this link.`
-                 + (already ? ` ${already}` : '')
-               : 'Pins from this link were not added.';
-    }
     // Rewrite to the plain single-pin form and re-enter. Depth-1 recursion by construction:
     // the hash is no longer a pins: link. replaceState fires no hashchange, so the first
     // pin is delineated once, not twice.
     history.replaceState(null, '', `#${f.lat},${f.lon}` + (f.name ? ',' + encodeURIComponent(f.name) : ''));
     routeFromHash();
-    // NOT setStatus: delineate() owns that line and would overwrite this immediately. The
-    // import is a write to their saved pins, so it says so somewhere that stays put.
-    $('pins-msg').textContent = msg;
+    // AFTER the recursion, and NOT setStatus: delineate() owns the status line and would
+    // overwrite this within the second.
+    offerPins(fresh, already);
     return;
   }
   const h = parseHash();
@@ -731,6 +807,45 @@ function routeFromHash() {
   });
 }
 window.addEventListener('hashchange', routeFromHash);
+// ---------- fourth way in: paste a coordinate, or a whole drainage link ----------
+// An installed PWA has no address bar (user-flagged 2026-09-03), so on the phone where this
+// app is actually used there was NO way to open a link someone sent you — least of all a
+// `#pins:` link, the one that carries a whole list of spots. Hence one box that takes both.
+// A link is handled by putting its fragment back in the URL and re-entering routeFromHash:
+// the import prompt, the dedupe, the canonicalization and the error text are all already
+// there and stay in one place. Do not give this box a delineation path of its own.
+function setHash(h) {
+  if (location.hash === h) routeFromHash();   // an identical fragment fires no hashchange
+  else location.hash = h;
+}
+function pasteGo() {
+  const s = $('paste-in').value.trim();
+  const note = $('paste-note');
+  const say = (msg, cls) => { note.textContent = msg; note.className = cls || 'note'; };
+  if (!s) return say('');
+  // A link is anything that starts like one. Sniffing for a '#' anywhere would misread the
+  // coordinate "37.2,-112.9,Site #3", whose name legitimately contains one.
+  if (/^(https?:\/\/|#|pins:)/i.test(s)) {
+    const i = s.indexOf('#');
+    const frag = i >= 0 ? s.slice(i + 1) : /^pins:/i.test(s) ? s : '';
+    if (!frag) return say('That link carries no spot — the part from the # onward is the coordinate, so paste the whole thing.', 'warn');
+    $('paste-in').value = '';
+    clearRoute();       // a new pour point; the old trace no longer describes it
+    say('');
+    setHash('#' + frag);   // invalid ones land on routeFromHash's own error
+    return;
+  }
+  if (!parseCoord(s)) return say('Not a coordinate or a drainage link. Try 37.23709, -112.94958 · 37°14\'13"N 112°56\'58"W · 327065mE 4122955mN.', 'warn');
+  $('paste-in').value = '';
+  clearRoute();
+  say('');
+  // the RAW text goes in the fragment, not the pair just parsed out of it: routeFromHash
+  // re-parses and canonicalizes, so a UTM paste still gets its "zone assumed" note exactly
+  // as it would have from the URL bar
+  setHash('#' + encodeURIComponent(s));
+}
+$('btn-paste').onclick = pasteGo;
+$('paste-in').onkeydown = e => { if (e.key === 'Enter') pasteGo(); };
 // ---------- trace the canyon: a polyline whose bottom end becomes the pour point ----------
 // A drainage is taken at ONE point, and WHICH point is the whole question: tap where you
 // drop in and every tributary joining below is missing from the answer, so the number you
@@ -814,9 +929,7 @@ document.addEventListener('keydown', e => {
 // routeFromHash do the work, so the back button works and there is only one way in.
 function goTo(lat, lon) {
   if (cur && !cur.failed && cur.lat === lat && cur.lon === lon) return;
-  const h = `${lat},${lon}`;
-  if (location.hash === '#' + h) routeFromHash();   // retry after a failure — same hash fires no hashchange
-  else location.hash = h;
+  setHash(`#${lat},${lon}`);   // same hash after a failure re-enters, so a retry works
 }
 // ---------- import a canyon's KML / GPX and pick its descent ----------
 // A ropewiki page publishes the canyon as KML/GPX, split into named segments (Approach,
@@ -1771,6 +1884,8 @@ $('btn-clear').onclick = () => {
   segs = [];
   $('import-box').hidden = true;
   $('import-note').textContent = '';
+  $('paste-note').textContent = '';
+  $('ask').textContent = '';
   for (const id of ['basin', 'flowline', 'fcast', 'points']) setData(id, EMPTY);
   $('title').textContent = 'Drainage';
   syncFbLoc();
@@ -1788,7 +1903,7 @@ $('btn-clear').onclick = () => {
 
 $('btn-share').onclick = async () => {
   flushName();
-  if (!okToShareUnpub(isUnpub(cur.name) ? [cur.name] : [])) {
+  if (!await okToShareUnpub($('ask'), isUnpub(cur.name) ? [cur.name] : [])) {
     setStatus('Link not copied.');
     return;
   }
@@ -2035,7 +2150,7 @@ $('pins-all').onclick = () => {
 $('pins-share').onclick = async () => {
   const sel = pinBoxes().filter(c => c.checked);
   if (!sel.length) return;
-  if (!okToShareUnpub(sel.map(c => c.dataset.name).filter(isUnpub))) {
+  if (!await okToShareUnpub($('pins-msg'), sel.map(c => c.dataset.name).filter(isUnpub))) {
     $('pins-msg').textContent = 'Link not copied.';
     return;
   }
@@ -2048,14 +2163,19 @@ $('pins-share').onclick = async () => {
   try { await navigator.clipboard.writeText(link); $('pins-msg').textContent = `Link to ${sel.length} pin${sel.length === 1 ? '' : 's'} copied.`; }
   catch { $('pins-msg').textContent = 'Copy this link: ' + link; }   // no prompt() in webviews
 };
-$('pins-del').onclick = () => {
+$('pins-del').onclick = async () => {
   const doomed = new Set(pinBoxes().filter(c => c.checked).map(c => `${c.dataset.lat},${c.dataset.lon}`));
   if (!doomed.size) return;
   // there is no undo, and the row ✕ deletes one — so a bulk delete says how many first
-  if (!confirm(`Delete ${doomed.size} saved pin${doomed.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  const n = doomed.size, pins = `pin${n === 1 ? '' : 's'}`;
+  if (!await askInPage($('pins-msg'), `Delete ${n} saved ${pins}? This cannot be undone.`,
+                       `Delete ${n}`, 'Keep them')) {
+    $('pins-msg').textContent = 'Nothing deleted.';
+    return;
+  }
   lsSet('pins', (lsGet('pins') || []).filter(p => !doomed.has(pinKey(p))));
   renderPins();
-  $('pins-msg').textContent = `Deleted ${doomed.size} pin${doomed.size === 1 ? '' : 's'}.`;
+  $('pins-msg').textContent = `Deleted ${n} ${pins}.`;
 };
 renderPins();
 

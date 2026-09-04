@@ -53,6 +53,24 @@ test('parseHash: UTM, with and without a zone, either field order', async ({ pag
   expect(await parseWith(page, '#12H 327065 4122955')).toBeNull();
 });
 
+test('parseCoord: degrees-minutes-seconds, degrees-decimal-minutes, a / separator', async ({ page }) => {
+  const p = s => page.evaluate(x => parseCoord(x), s);
+  const want = { lat: 37.23708, lon: -112.94958 };   // 37°14'13.5"N 112°56'58.5"W
+  for (const s of [`37°14'13.5"N 112°56'58.5"W`, `37°14'13.5"N, 112°56'58.5"W`,
+                   `N37° 14.225' / W112° 56.975'`, `37°14'13.5" -112°56'58.5"`,
+                   `W112°56'58.5" N37°14'13.5"`]) {                    // hemispheres say which is which
+    expect(await p(s), s).toEqual(want);
+  }
+  expect(await p(`37°14'13.5"N 112°56'58.5"W, Pine Creek`)).toEqual({ ...want, name: 'Pine Creek' });
+  // half a pair, trailing junk, and impossible minutes are refused rather than half-read
+  for (const s of [`37°14'13.5"N`, `37°14'13.5"N 112°56'58.5"W somewhere`, `37°61'N 112°0'W`]) {
+    expect(await p(s), s).toBeNull();
+  }
+  // a slash is as common as a comma in pasted beta — decimal and UTM both take it
+  expect(await p('37.2/-112.9')).toEqual({ lat: 37.2, lon: -112.9 });
+  expect(await p('327065mE/4122955mN')).toMatchObject({ lat: 37.23709, lon: -112.94958 });
+});
+
 test('parseHash: a malformed percent-escape (a link truncated by a messaging app) reads as invalid, not a crash', async ({ page }) => {
   expect(await parseWith(page, '#37.2,-112.9,100%')).toBeNull();
 });

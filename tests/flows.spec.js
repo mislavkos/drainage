@@ -101,46 +101,98 @@ test('counting: exactly ONE delineate event per tap, no coordinates on the wire'
   expect(sent[0]).not.toMatch(/37\.2|112\.9/);
 });
 
-test('multi-pin import: dialog offers only new pins; accept saves and delineates the first', async ({ page }) => {
+// The offer is IN THE PAGE, never a dialog: a PWA/webview suppresses confirm() and the
+// import would evaporate with no trace. `page.on('dialog')` asserts none is used.
+test('multi-pin import: the offer names only new pins; Add saves and the first is already delineated', async ({ page }) => {
   await mockServices(page);
   await page.addInitScript(() => {
     localStorage.setItem('drainage:pins', JSON.stringify([{ lat: 38, lon: -109, name: 'Already' }]));
   });
-  let dialogMsg = '';
-  page.on('dialog', d => { dialogMsg = d.message(); d.accept(); });
+  let dialogs = 0;
+  page.on('dialog', d => { dialogs++; d.accept(); });
   await page.goto('/#pins:37.2,-112.9,First;38,-109,Already;39.5,-110.5,Third');
   await doneStatus(page);
-  expect(dialogMsg).toContain('Add 2 new pins');
-  expect(dialogMsg).toContain('First');
-  expect(dialogMsg).not.toContain('Already');
-  await expect(page.locator('#pins-msg')).toContainText('Added 2 pins from this link. 1 was already saved.');
+  const offer = page.locator('#ask');
+  await expect(offer).toContainText('This link has 2 new pins');
+  await expect(offer).toContainText('First');
+  await expect(offer).not.toContainText('Already,');   // the dup is counted, not listed
+  await expect(offer).toContainText('1 was already saved.');
+  expect(page.url()).toContain('#37.2,-112.9,First');   // rewritten to the single-pin form
+  await offer.getByRole('button', { name: 'Add 2 pins' }).click();
+  await expect(offer).toHaveText('Added 2 pins from this link. 1 was already saved.');
   const pins = await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')));
   expect(pins).toHaveLength(3);
-  expect(page.url()).toContain('#37.2,-112.9,First');   // rewritten to the single-pin form
+  expect(dialogs).toBe(0);
 });
 
-test('multi-pin import: declining writes nothing but still shows the first drainage', async ({ page }) => {
+test('multi-pin import: No thanks writes nothing but still shows the first drainage', async ({ page }) => {
   await mockServices(page);
-  // Playwright auto-dismisses dialogs — same as confirm() returning false
   await page.goto('/#pins:37.2,-112.9,First;39.5,-110.5,Third');
   await doneStatus(page);
-  await expect(page.locator('#pins-msg')).toContainText('Pins from this link were not added.');
+  await page.locator('#ask').getByRole('button', { name: 'No thanks' }).click();
+  await expect(page.locator('#ask')).toHaveText('Pins from this link were not added.');
   expect(await page.evaluate(() => localStorage.getItem('drainage:pins'))).toBeNull();
 });
 
-test('multi-pin import: all duplicates → no dialog at all', async ({ page }) => {
+test('multi-pin import: nothing is written before the reader answers', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/#pins:37.2,-112.9,First');
+  await doneStatus(page);
+  await expect(page.locator('#ask')).toContainText('This link has 1 new pin');
+  expect(await page.evaluate(() => localStorage.getItem('drainage:pins'))).toBeNull();
+});
+
+test('multi-pin import: all duplicates → nothing to ask', async ({ page }) => {
   await mockServices(page);
   await page.addInitScript(() => {
     localStorage.setItem('drainage:pins', JSON.stringify([{ lat: 37.2, lon: -112.9, name: 'Mine' }]));
   });
-  let dialogs = 0;
-  page.on('dialog', d => { dialogs++; d.accept(); });
   await page.goto('/#pins:37.2,-112.9,Theirs');
   await doneStatus(page);
-  expect(dialogs).toBe(0);
-  await expect(page.locator('#pins-msg')).toContainText('Every pin in this link was already saved.');
+  await expect(page.locator('#ask')).toHaveText('Every pin in this link was already saved.');
+  await expect(page.locator('#ask button')).toHaveCount(0);
   const pins = await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')));
   expect(pins).toEqual([{ lat: 37.2, lon: -112.9, name: 'Mine' }]);   // local name survived
+});
+
+// The PWA has no address bar, so the paste box is the only way in for a link on a phone.
+test('paste box: a whole multi-pin link goes through the same import prompt', async ({ page }) => {
+  await mockServices(page);
+  let dialogMsg = '';
+  page.on('dialog', d => { dialogMsg = d.message(); d.accept(); });
+  await page.goto('/');
+  await page.fill('#paste-in', 'https://example.com/drainage/#pins:37.2,-112.9,First;39.5,-110.5,Third');
+  await page.click('#btn-paste');
+  await doneStatus(page);
+  expect(dialogMsg).toBe('');   // no modal: this is the PWA case, where they are suppressed
+  const offer = page.locator('#ask');
+  await expect(offer).toContainText('This link has 2 new pins');
+  await offer.getByRole('button', { name: 'Add 2 pins' }).click();
+  await expect(offer).toHaveText('Added 2 pins from this link.');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')))).toHaveLength(2);
+  expect(page.url()).toContain('#37.2,-112.9,First');
+  await expect(page.locator('#paste-in')).toHaveValue('');
+});
+
+test('paste box: a DMS coordinate delineates and the URL is rewritten to decimal', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/');
+  await page.fill('#paste-in', `37°12'00"N 112°54'00"W, Pine Creek`);
+  await page.press('#paste-in', 'Enter');
+  await doneStatus(page);
+  expect(page.url()).toContain('#37.2,-112.9,Pine%20Creek');
+  await expect(page.locator('#title')).toHaveText('Drainage — Pine Creek');
+});
+
+test('paste box: junk is refused, leaving the URL and the text alone', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/');
+  await page.fill('#paste-in', 'somewhere near the big rock');
+  await page.click('#btn-paste');
+  await expect(page.locator('#paste-note')).toHaveClass('warn');
+  await expect(page.locator('#paste-note')).toContainText('Not a coordinate');
+  expect(page.url()).not.toContain('#');
+  await expect(page.locator('#paste-in')).toHaveValue('somewhere near the big rock');
 });
 
 test('invalid share link shows the error, not silence', async ({ page }) => {
@@ -243,7 +295,8 @@ test('saving and deleting pins round-trips through localStorage', async ({ page 
 });
 
 test('unpublished: Ω rides in the name, groups at the bottom, and gates both share paths', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-write']);   // config denies all by default
+  // config denies all by default; read is here to prove the write actually landed
+  await context.grantPermissions(['clipboard-write', 'clipboard-read']);
   await mockServices(page);
   await page.addInitScript(() => {
     localStorage.setItem('drainage:pins', JSON.stringify([
@@ -263,28 +316,60 @@ test('unpublished: Ω rides in the name, groups at the bottom, and gates both sh
   await expect(page.locator('#title')).toHaveText('Drainage — Ω Neon');
   expect(decodeURIComponent(page.url())).toContain('#37.2,-112.9,Ω Neon');
 
-  // single share: declining copies nothing (Playwright auto-dismisses = confirm() false)
-  let msg = '';
-  page.once('dialog', d => { msg = d.message(); d.dismiss(); });
+  // The gate is in the page, never a dialog: a dialog is suppressed in an installed PWA,
+  // where it would make sharing an unpublished spot impossible rather than deliberate.
+  let dialogs = 0;
+  page.on('dialog', d => { dialogs++; d.dismiss(); });
+
+  // single share: Cancel copies nothing
   await page.locator('#btn-share').click();
-  expect(msg).toContain('1 unpublished spot');
+  await expect(page.locator('#ask')).toContainText('1 unpublished spot');
+  await page.locator('#ask').getByRole('button', { name: 'Cancel' }).click();
   await expect(page.locator('#status')).toHaveText('Link not copied.');
 
-  // group share: only the ticked Ω pins are named, and accepting goes through
+  // group share: only the ticked Ω pins are named, and the copy goes through from the
+  // question's own button — the clipboard needs that click's user gesture
   await page.locator('#btn-pin').click();
   await page.locator('#pins-all').click();
-  page.once('dialog', d => { msg = d.message(); d.accept(); });
   await page.locator('#pins-share').click();
-  expect(msg).toContain('2 unpublished spots');
-  expect(msg).toContain('Ω Secret');
-  expect(msg).not.toContain('Zion Public');
-  await expect(page.locator('#pins-msg')).toContainText('Link to 3 pins copied.');
+  const ask = page.locator('#pins-msg');
+  await expect(ask).toContainText('2 unpublished spots');
+  await expect(ask).toContainText('Ω Secret');
+  await expect(ask).not.toContainText('Zion Public');
+  await ask.getByRole('button', { name: 'Copy the link' }).click();
+  await expect(ask).toHaveText('Link to 3 pins copied.');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('#pins:');
 
   // and unticking strips it again
   await page.locator('#chk-unpub').uncheck();
   await expect(page.locator('#pin-name')).toHaveValue('Neon');
-  await page.locator('#btn-share').click();          // no dialog to dismiss now
+  await page.locator('#btn-share').click();          // nothing to answer now
   await expect(page.locator('#status')).toHaveText('Share link copied.');
+  expect(dialogs).toBe(0);
+});
+
+test('bulk delete asks in the page, and Keep them keeps them', async ({ page }) => {
+  await mockServices(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('drainage:pins', JSON.stringify([
+      { lat: 38, lon: -109, name: 'One' }, { lat: 39, lon: -110, name: 'Two' },
+    ]));
+  });
+  let dialogs = 0;
+  page.on('dialog', d => { dialogs++; d.dismiss(); });
+  await page.goto('/');
+  await page.locator('#pins-all').click();
+  await page.locator('#pins-del').click();
+  const ask = page.locator('#pins-msg');
+  await expect(ask).toContainText('Delete 2 saved pins? This cannot be undone.');
+  await ask.getByRole('button', { name: 'Keep them' }).click();
+  await expect(ask).toHaveText('Nothing deleted.');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')))).toHaveLength(2);
+  await page.locator('#pins-del').click();
+  await ask.getByRole('button', { name: 'Delete 2' }).click();
+  await expect(ask).toHaveText('Deleted 2 pins.');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('drainage:pins')))).toEqual([]);
+  expect(dialogs).toBe(0);
 });
 
 test('shift-click selects a range of saved pins', async ({ page }) => {
@@ -312,7 +397,11 @@ test('pasted coordinates: spaces, missing comma, degrees — and the URL is cano
   await page.goto('/#(+37.2° -112.9°)');            // no comma at all, degrees, parens
   await doneStatus(page);
   expect(page.url()).toContain('#37.2,-112.9');
-  await page.goto('/#37°13\'17\"N 112°57\'36\"W');   // DMS reads as invalid, never as junk decimals
+  await page.goto('/#37°13\'17\"N 112°57\'36\"W');   // DMS, converted and canonicalized
+  await doneStatus(page);
+  expect(page.url()).toContain('#37.22139,-112.96');
+  // without the ° it is indistinguishable from a decimal or a UTM pair — refused, not guessed
+  await page.goto('/#37 13 17 N 112 57 36 W');
   await expect(page.locator('#status')).toHaveText(/^Invalid share link/);
 });
 
