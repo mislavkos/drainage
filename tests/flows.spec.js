@@ -34,6 +34,8 @@ test('forecast: hourly max renders with peak line in the basin’s timezone unit
   await expect(page.locator('#forecast')).toContainText('Peak rain: 0.08 in/hr', { timeout: 15000 });
   await expect(page.locator('#forecast')).toContainText('60% chance');
   await expect(page.locator('#forecast svg')).toBeVisible();
+  // measurable rain keeps the full-height axis — only a rainless chart shrinks to a strip
+  expect(await page.locator('#forecast svg').getAttribute('viewBox')).toBe('0 0 336 132');
 });
 
 // the popup is opened directly: `map` is a module-scope const, so a real dot click
@@ -50,6 +52,29 @@ test('forecast popup: a spot dot draws that ONE spot’s chart, plus the way out
   await expect(popup).not.toContainText('worst spot in the drainage');   // that caveat is the panel's job
   await expect(popup.locator('svg')).toBeVisible();
   await expect(popup.locator('a')).toHaveAttribute('href', 'https://forecast.weather.gov/x');
+});
+
+test('a bone-dry forecast: a strip, not a void, and no legend for marks that are not drawn', async ({ page }) => {
+  await mockServices(page, { forecast: 'dry' });
+  await page.goto('/' + HASH);
+  await doneStatus(page);
+  const fc = page.locator('#forecast');
+  await expect(fc).toContainText('No rain signal anywhere in this drainage', { timeout: 15000 });
+  await expect(fc).not.toContainText('Blue bars');      // there are none
+  await expect(fc).not.toContainText('chance of rain'); // nor any green
+  await expect(fc).toContainText('Tap any column for its numbers.');
+  expect(await fc.locator('svg').getAttribute('viewBox')).toBe('0 0 336 82');   // 132 with anything to plot
+});
+
+test('a 6% chance is NOT "no rain signal" — the words have to match the line the chart draws', async ({ page }) => {
+  await mockServices(page, { forecast: 'faint' });
+  await page.goto('/' + HASH);
+  await doneStatus(page);
+  const fc = page.locator('#forecast');
+  await expect(fc).toContainText('Little to no rain expected — top chance 6%.', { timeout: 15000 });
+  await expect(fc).toContainText('Green: chance of rain.');
+  await expect(fc).not.toContainText('Blue bars');   // 0 in of rain, so no bars to decode
+  expect(await fc.locator('svg').getAttribute('viewBox')).toBe('0 0 336 82');   // no rain, so no tall rain axis
 });
 
 // the config denies geolocation for every other test — the first-load auto-center

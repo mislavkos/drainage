@@ -39,11 +39,17 @@ const FIXTURES = {
     forecastGridData: 'https://api.weather.gov/gridpoints/SLC/100,200',
     timeZone: 'America/Denver',
   } }),
-  // 12.7 mm over 6 h = 0.0833 in/hr → displays as a 0.08 in/hr peak
-  grid: () => ({ properties: {
-    quantitativePrecipitation: { uom: 'wmoUnit:mm', values: [{ validTime: `${topOfHour()}/PT6H`, value: 12.7 }] },
-    probabilityOfPrecipitation: { uom: 'wmoUnit:percent', values: [{ validTime: `${topOfHour()}/PT12H`, value: 60 }] },
-    temperature: { uom: 'wmoUnit:degC', values: [{ validTime: `${topOfHour()}/P1D`, value: 20 }] },
+  // 12.7 mm over 6 h = 0.0833 in/hr → displays as a 0.08 in/hr peak. 'dry' and 'faint'
+  // cover the whole 48 h so no hour falls back to a grey "unknown" column — the empty
+  // state only applies when there is genuinely nothing to draw, gaps included.
+  grid: (mode) => ({ properties: {
+    quantitativePrecipitation: { uom: 'wmoUnit:mm', values: mode
+      ? [{ validTime: `${topOfHour()}/P2D`, value: 0 }]
+      : [{ validTime: `${topOfHour()}/PT6H`, value: 12.7 }] },
+    probabilityOfPrecipitation: { uom: 'wmoUnit:percent', values: mode
+      ? [{ validTime: `${topOfHour()}/P2D`, value: mode === 'faint' ? 6 : 0 }]
+      : [{ validTime: `${topOfHour()}/PT12H`, value: 60 }] },
+    temperature: { uom: 'wmoUnit:degC', values: [{ validTime: `${topOfHour()}/P2D`, value: 20 }] },
   } }),
   alert: () => ({ type: 'Feature', geometry: null, properties: {
     event: 'Flood Watch', severity: 'Severe', headline: 'Flood Watch until 6 AM MDT',
@@ -54,10 +60,11 @@ const FIXTURES = {
 };
 
 // opts: { streamstats: 'decline'|'exact', alerts: 'zone'|'none'|'fail',
-//         nldi: 'ok'|'fail', zone: 'ok'|'missing', elev: 'ok'|'nodata'|'fail' }
+//         nldi: 'ok'|'fail', zone: 'ok'|'missing', elev: 'ok'|'nodata'|'fail',
+//         forecast: 'rain'|'dry'|'faint' }
 // Returns { opts, requests } — opts is live-mutable, requests logs {url, post}.
 async function mockServices(page, opts = {}) {
-  const o = Object.assign({ streamstats: 'decline', alerts: 'zone', nldi: 'ok', zone: 'ok', elev: 'ok' }, opts);
+  const o = Object.assign({ streamstats: 'decline', alerts: 'zone', nldi: 'ok', zone: 'ok', elev: 'ok', forecast: 'rain' }, opts);
   const requests = [];
   await page.route('**/*', route => {
     const url = route.request().url();
@@ -84,7 +91,7 @@ async function mockServices(page, opts = {}) {
       return json({ samples: pts.map((p, i) => ({ locationId: i, value: String(1600 + (p[1] - 37.2) * 30000) })) });
     }
     if (url.includes('api.weather.gov/points/')) return json(FIXTURES.points());
-    if (url.includes('api.weather.gov/gridpoints/')) return json(FIXTURES.grid());
+    if (url.includes('api.weather.gov/gridpoints/')) return json(FIXTURES.grid(o.forecast === 'rain' ? null : o.forecast));
     if (url.includes('api.weather.gov/alerts/active')) {
       if (o.alerts === 'fail') return fail();
       return json({ features: o.alerts === 'zone' ? [FIXTURES.alert()] : [] });

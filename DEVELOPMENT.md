@@ -619,6 +619,20 @@ IANA `timeZone`, cacheable forever. Grid data gotchas, all handled and easy to r
   floor caps how tall a *tiny* 48 h max can draw, it does not hide small bars; green
   chance envelope draws OVER the blue bars with a visible top edge; units and timezone
   live in the tapped-column readout (no row-edge labels).
+- **The chance is rounded ONCE**, at the top of `drawTimeline`, and the headline, the
+  tooltips and the green envelope all test that same number. They used to disagree: the
+  envelope drew for any `pop > 0` while the headline said "no rain signal" below 20%, so
+  a 1% chance produced a visible green line the words denied. Whatever you change here,
+  keep one predicate — a chart that contradicts its own caption reads as broken.
+- **Empty states, added 2026-09-07** (both fixes live in `drawTimeline`, so the panel and
+  the map popups get them together):
+  - The decoder line names only the marks actually drawn. A legend promising "blue bars"
+    over a rainless chart is what made a dry forecast look like a failed one.
+  - No measurable rain → the plot draws 24 px tall instead of 74 (`flat`; `base` and the
+    viewBox height derive from it, so nothing else needs moving). The in/hr axis has
+    nothing on it, and the white space read as a load failure. **Unknown hours are an
+    exception**: a grey no-data column is a mark, and "we don't know" must never be
+    expressed as an empty-looking chart, so any gap keeps the full height.
 - Text sizes are rem-based with a persisted A⇄A switch (`html.big { font-size: 125% }`).
   Chart SVG text ignores CSS rem, so `drawTimeline` scales its own font sizes off the
   `big` class. Trap: the 0.875rem base lives on `body` ONLY — putting it on `html`

@@ -1654,7 +1654,18 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz, oneSpot) {
   el.className = '';
   el.textContent = '';
   qpfIn = qpfIn.map(v => v == null ? null : roundRain(v));
-  const n = qpfIn.length, W = 336, H = 132, plotH = 74, base = 96, w = W / n;
+  // Round the chance ONCE, here: the headline, the tooltips and the green envelope then
+  // all test the same number. They used to disagree — a 3% chance drew a green line the
+  // headline called "no rain signal", so the chart appeared to contradict the words.
+  pop = pop.map(v => v == null ? null : Math.round(v));
+  const anyRain = qpfIn.some(v => v > 0), anyChance = pop.some(v => v > 0);
+  // No measurable rain means the y-axis — an in/hr axis — has nothing on it, and 74 px of
+  // white reads as a chart that failed to load. Give those a strip instead of a void: the
+  // chance envelope still draws, at the same proportion, and the headline carries the
+  // number in words. A grey "unknown hour" IS a mark, so a forecast with gaps keeps its
+  // height — an empty-looking chart must never be how "we don't know" is expressed.
+  const flat = !anyRain && !qpfIn.some((v, i) => v == null && pop[i] == null);
+  const n = qpfIn.length, W = 336, plotH = flat ? 24 : 74, base = plotH + 22, H = base + 36, w = W / n;
   // y-scale floor: small amounts still draw (short), but when the 48 h max is itself
   // tiny the axis can't autoscale to it — full height always means ≥ 0.1 in/hr
   const qMax = Math.max(0.1, ...qpfIn.filter(v => v != null));
@@ -1667,13 +1678,13 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz, oneSpot) {
   const popMax = maxOrNull(pop);
   if (peak >= 0 && qpfIn[peak] >= 0.005) {
     head.textContent = `Peak rain: ${fmtRain(qpfIn[peak])}/hr ${fmtHour(t0 + peak * 3600000, tz, true)}` +
-      (pop[peak] != null ? ` · ${Math.round(pop[peak])}% chance` : '');
+      (pop[peak] != null ? ` · ${pop[peak]}% chance` : '');
     if (qpfIn[peak] >= 0.1 && (pop[peak] ?? 0) >= 50) head.className = 'warn';
   } else if (popMax == null) {
     head.textContent = 'Rain data unavailable.';
     head.className = 'warn';
-  } else if (popMax >= 20) {
-    head.textContent = `Little to no rain expected — top chance ${Math.round(popMax)}%.`;
+  } else if (popMax > 0) {   // > 0 is exactly the test the green envelope draws on
+    head.textContent = `Little to no rain expected — top chance ${popMax}%.`;
   } else {
     head.textContent = oneSpot ? 'No rain signal at this spot for the next 48 h.'
       : 'No rain signal anywhere in this drainage for the next 48 h.';
@@ -1686,7 +1697,7 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz, oneSpot) {
   for (let i = 0; i < n; i++) {
     const x = i * w;
     const tip = `${fmtHour(t0 + i * 3600000, tz, true)} ${tzName} — ` +
-      (pop[i] != null ? `${Math.round(pop[i])}% chance` : 'chance unknown') + ', ' +
+      (pop[i] != null ? `${pop[i]}% chance` : 'chance unknown') + ', ' +
       (qpfIn[i] != null ? fmtRain(qpfIn[i]) : 'amount unknown') +
       (temp[i] != null ? `, ${fmtTemp(temp[i])}${isUS() ? 'F' : 'C'}` : '');
     tips.push(tip);
@@ -1735,11 +1746,16 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz, oneSpot) {
 
   const note = document.createElement('div');
   note.className = 'note';
-  // stays visible (not a tooltip): phones have no hover, and this is the only decoder
-  // the drainage-wide line is a caveat about WHICH spot the numbers came from; a popup
-  // already named its spot in the heading, so repeating it there is just noise
-  note.textContent = (oneSpot ? '' : 'Each hour shows the worst spot in the drainage. ') +
-    'Blue bars: rain per hour · green: chance of rain · tap any column for its numbers.';
+  // stays visible (not a tooltip): phones have no hover, and this is the only decoder.
+  // Each clause is dropped when it has nothing to decode — a legend naming blue bars over
+  // an empty chart is what makes a dry forecast read as broken rather than dry. The
+  // drainage-wide caveat goes the same way: a popup already named its spot in the heading.
+  const bits = [];
+  if (!oneSpot) bits.push('Each hour shows the worst spot in the drainage.');
+  if (anyRain) bits.push('Blue bars: rain per hour.');
+  if (anyChance) bits.push('Green: chance of rain.');
+  bits.push('Tap any column for its numbers.');
+  note.textContent = bits.join(' ');
   el.appendChild(note);
 }
 
