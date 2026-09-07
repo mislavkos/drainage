@@ -36,6 +36,22 @@ test('forecast: hourly max renders with peak line in the basin’s timezone unit
   await expect(page.locator('#forecast svg')).toBeVisible();
 });
 
+// the popup is opened directly: `map` is a module-scope const, so a real dot click
+// can't be aimed from the test — the two one-line click handlers that call this are
+// the only untested part, and the chart it draws is the part that can break
+test('forecast popup: a spot dot draws that ONE spot’s chart, plus the way out to NWS', async ({ page }) => {
+  await mockServices(page);
+  await page.goto('/' + HASH);
+  await doneStatus(page);
+  await page.evaluate(() => forecastPopup([-112.9, 37.2], 'Far edge, 3.0 mi E of you', 'https://forecast.weather.gov/x'));
+  const popup = page.locator('.maplibregl-popup');
+  await expect(popup).toContainText('Far edge, 3.0 mi E of you');
+  await expect(popup).toContainText('Peak rain: 0.08 in/hr', { timeout: 15000 });
+  await expect(popup).not.toContainText('worst spot in the drainage');   // that caveat is the panel's job
+  await expect(popup.locator('svg')).toBeVisible();
+  await expect(popup.locator('a')).toHaveAttribute('href', 'https://forecast.weather.gov/x');
+});
+
 test('units toggle converts area and rain without a re-delineation', async ({ page }) => {
   const { requests } = await mockServices(page);
   await page.goto('/' + HASH);

@@ -1133,13 +1133,32 @@ map.on('click', e => {
   clearRoute();   // this tap moves the pour point somewhere the old trace no longer describes
   goTo(lat, lon);
 });
+// The panel's timeline is the worst hour anywhere in the drainage; this is the one spot
+// you tapped. Drawn inline so the common question — "is it raining THERE?" — is answered
+// without leaving the map; the NWS link stays for everything a 48 h chart can't say.
 function forecastPopup(coords, label, url) {
+  const box = document.createElement('div');
+  const head = document.createElement('div');
+  head.style.fontWeight = '600';
+  head.textContent = label;
+  const chart = document.createElement('div');
   const a = document.createElement('a');
   a.href = url;
   a.target = '_blank';
   a.rel = 'noopener';
-  a.textContent = label + ' — forecast';
-  new maplibregl.Popup().setLngLat(coords).setDOMContent(a).addTo(map);
+  a.className = 'note';
+  a.textContent = 'Full NWS forecast for this spot';
+  box.append(head, chart, a);
+  const popup = new maplibregl.Popup({ maxWidth: '330px' }).setLngLat(coords).setDOMContent(box).addTo(map);
+  if (!showForecast) return;   // forecast suppressed for this embed — the link alone, as before
+  chart.className = 'note';
+  chart.textContent = 'Loading forecast…';
+  forecastSeries([{ c: coords }]).then(f => {
+    if (popup.isOpen()) drawTimeline(chart, f.t0, f.qpf, f.pop, f.temp, f.tz, true);
+  }).catch(e => {
+    chart.className = 'warn';
+    chart.textContent = `Forecast unavailable (${e.message}).`;
+  });
 }
 map.on('click', 'fcast', e => {
   const p = e.features[0].properties;
@@ -1573,35 +1592,43 @@ function fmtHour(t, tz, withDay) {
   return withDay ? new Date(t).toLocaleDateString([], { weekday: 'short', timeZone: tz }) + ' ' + lbl : lbl;
 }
 
+// 48 h hourly series over one or more spots: rain and chance are the worst across their
+// grid cells, temperature comes from the first spot's cell. One spot in, and it's simply
+// that spot's own forecast — which is what a popup on a violet dot asks for.
+async function forecastSeries(spots) {
+  const HOURS = 48;
+  const infos = await Promise.all(spots.map(s => getGridInfo(s.c)));
+  const cells = [...new Map(infos.map(i => [i.url, i])).values()]; // spots share grid cells — dedupe
+  const datas = await Promise.all(cells.map(i => getGridData(i.url)));
+  const t0 = Math.floor(Date.now() / 3600000) * 3600000;
+  const qpf = [], pop = [];
+  // QPF arrives in mm (the uom says so) — trust the uom, not the assumption
+  const qpfAll = datas.map(d => {
+    const q = d.properties.quantitativePrecipitation;
+    const toInch = (q?.uom || '').includes(':in') ? 1 : 1 / 25.4;
+    return sampleHourly(q?.values, t0, HOURS, true).map(v => v == null ? null : v * toInch);
+  });
+  const popAll = datas.map(d => sampleHourly(d.properties.probabilityOfPrecipitation?.values, t0, HOURS, false));
+  for (let i = 0; i < HOURS; i++) {
+    qpf.push(maxOrNull(qpfAll.map(a => a[i])));
+    pop.push(maxOrNull(popAll.map(a => a[i])));
+  }
+  const firstCell = datas[cells.findIndex(c => c.url === infos[0].url)].properties;
+  const inF = (firstCell.temperature?.uom || '').includes('degF');
+  const temp = sampleHourly(firstCell.temperature?.values, t0, HOURS, false)
+    .map(v => v == null ? null : inF ? v : v * 9 / 5 + 32);
+  return { t0, qpf, pop, temp, tz: infos[0].tz };
+}
+
 async function renderForecast(spots) {
   const run = runId, seq = ++fcSeq;
   const el = $('forecast');
   el.className = 'note';
   el.textContent = 'Loading forecast…';
   try {
-    const HOURS = 48;
-    const infos = await Promise.all(spots.map(s => getGridInfo(s.c)));
-    const cells = [...new Map(infos.map(i => [i.url, i])).values()]; // spots share grid cells — dedupe
-    const datas = await Promise.all(cells.map(i => getGridData(i.url)));
+    const f = await forecastSeries(spots);
     if (run !== runId || seq !== fcSeq) return;
-    const t0 = Math.floor(Date.now() / 3600000) * 3600000;
-    const qpf = [], pop = [];
-    // QPF arrives in mm (the uom says so) — trust the uom, not the assumption
-    const qpfAll = datas.map(d => {
-      const q = d.properties.quantitativePrecipitation;
-      const toInch = (q?.uom || '').includes(':in') ? 1 : 1 / 25.4;
-      return sampleHourly(q?.values, t0, HOURS, true).map(v => v == null ? null : v * toInch);
-    });
-    const popAll = datas.map(d => sampleHourly(d.properties.probabilityOfPrecipitation?.values, t0, HOURS, false));
-    for (let i = 0; i < HOURS; i++) {
-      qpf.push(maxOrNull(qpfAll.map(a => a[i])));
-      pop.push(maxOrNull(popAll.map(a => a[i])));
-    }
-    const pourData = datas[cells.findIndex(c => c.url === infos[0].url)].properties;
-    const inF = (pourData.temperature?.uom || '').includes('degF');
-    const temp = sampleHourly(pourData.temperature?.values, t0, HOURS, false)
-      .map(v => v == null ? null : inF ? v : v * 9 / 5 + 32);
-    drawTimeline(el, t0, qpf, pop, temp, infos[0].tz);
+    drawTimeline(el, f.t0, f.qpf, f.pop, f.temp, f.tz);
   } catch (e) {
     if (run !== runId || seq !== fcSeq) return;
     el.className = 'warn';
@@ -1615,7 +1642,7 @@ async function renderForecast(spots) {
   }
 }
 
-function drawTimeline(el, t0, qpfIn, pop, temp, tz) {
+function drawTimeline(el, t0, qpfIn, pop, temp, tz, oneSpot) {
   el.className = '';
   el.textContent = '';
   qpfIn = qpfIn.map(v => v == null ? null : roundRain(v));
@@ -1640,7 +1667,8 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz) {
   } else if (popMax >= 20) {
     head.textContent = `Little to no rain expected — top chance ${Math.round(popMax)}%.`;
   } else {
-    head.textContent = 'No rain signal anywhere in this drainage for the next 48 h.';
+    head.textContent = oneSpot ? 'No rain signal at this spot for the next 48 h.'
+      : 'No rain signal anywhere in this drainage for the next 48 h.';
   }
   el.appendChild(head);
 
@@ -1700,7 +1728,10 @@ function drawTimeline(el, t0, qpfIn, pop, temp, tz) {
   const note = document.createElement('div');
   note.className = 'note';
   // stays visible (not a tooltip): phones have no hover, and this is the only decoder
-  note.textContent = 'Each hour shows the worst spot in the drainage. Blue bars: rain per hour · green: chance of rain · tap any column for its numbers.';
+  // the drainage-wide line is a caveat about WHICH spot the numbers came from; a popup
+  // already named its spot in the heading, so repeating it there is just noise
+  note.textContent = (oneSpot ? '' : 'Each hour shows the worst spot in the drainage. ') +
+    'Blue bars: rain per hour · green: chance of rain · tap any column for its numbers.';
   el.appendChild(note);
 }
 

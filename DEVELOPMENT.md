@@ -599,8 +599,11 @@ The two safety lines in the footer stay OUTSIDE the About expander and always vi
 
 48-hour hourly chart — QPF bars, chance-of-rain envelope, temps — where each hour is the
 **max across the basin's spots** (pour point, centroid, 4 spread far-edge vertices;
-violet dots on the map, click for that spot's NWS page). Spots dedupe to 2–4 NWS grid
-cells. The far-edge picker samples ~500 boundary vertices (an unsimplified basin can
+violet dots on the map). Clicking any dot — or the grey tap / orange pour-point marker —
+opens a popup with that ONE spot's own 48 h chart (`drawTimeline(..., oneSpot)`, same
+series code via `forecastSeries`), plus the link to its NWS page: the panel answers "is
+it raining anywhere above me", the popup answers "is it raining there". Spots dedupe to
+2–4 NWS grid cells. The far-edge picker samples ~500 boundary vertices (an unsimplified basin can
 carry tens of thousands, and the greedy scan is O(picks × chosen × vertices)).
 
 Plumbing (`api.weather.gov`): `points/{lat},{lon}` → `gridId` + `forecastGridData` +
