@@ -513,7 +513,7 @@ test('traced line delineates at its BOTTOM end, and tracing does not delineate m
   expect(lat).toBeLessThan(traced[0][1]);            // and that end is the downhill one
   await expect(page.locator('#status')).toHaveText(/^Done\. Exact drainage/, { timeout: 15000 });
   await expect(page.locator('#basin-info .warn')).toHaveCount(0);   // route is inside the basin
-  await expect(page.locator('#btn-draw')).toHaveText(/Draw the canyon/);
+  await expect(page.locator('#btn-draw')).toHaveText(/Draw canyon ↓/);
 });
 
 test('a line traced bottom-to-top is caught: most of the route falls outside the drainage', async ({ page }) => {
@@ -526,11 +526,50 @@ test('a line traced bottom-to-top is caught: most of the route falls outside the
   await traceOnMap(page, [[-112.9, 37.5], [-112.9, 37.45], [-112.9, 37.2]]);
   await page.locator('#btn-draw').click();
   await expect(page.locator('#basin-info .warn'))
-    .toContainText('2 of the 3 points you traced are OUTSIDE', { timeout: 15000 });
-  await expect(page.locator('#basin-info .warn')).toContainText('traced from the bottom up');
+    .toContainText('Did you draw the canyon bottom to top?', { timeout: 15000 });
+  // the polyline is right and only the end is wrong, so one click moves the pour point to
+  // the far end and KEEPS the line — re-tracing the canyon by hand is the thing this avoids
+  await expect(page.locator('#basin-info .warn button')).toHaveText('Use the other end');
+  // tapped coords come back through map.project, so compare against the line's own first
+  // vertex rather than the lon/lat asked for above
+  const first = await page.evaluate(() => route[0]);
+  await page.locator('#basin-info .warn button').click();
+  await expect.poll(() => page.evaluate(() => cur && [cur.lat, cur.lon]), { timeout: 15000 })
+    .toEqual([+first[1].toFixed(5), +first[0].toFixed(5)]);
+  expect(await page.evaluate(() => route && route.length)).toBe(3);
   // and a plain tap afterwards drops the stale trace along with its warning
   await page.locator('#btn-clear').click();
   expect(await page.evaluate(() => route)).toBeNull();
+});
+
+// The simplest trace anyone can make is two taps, and it used to get no check at all: the
+// old gate wanted >1 vertex outside, but one of any 2 vertices IS the pour point, sitting on
+// the boundary. Reported from the field 2026-09-07 with a real 2-point reversal.
+test('a two-point trace is the minimum anyone draws, and a reversed one still warns', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact' });
+  await page.goto('/');
+  await page.evaluate(() => map.jumpTo({ center: [-112.9, 37.3], zoom: 8 }));
+  await page.locator('#btn-draw').click();
+  // pour stays at the mock's own point so no snap warning competes; the far end is ~22 km out
+  await traceOnMap(page, [[-112.9, 37.5], [-112.9, 37.2]]);
+  await page.locator('#btn-draw').click();
+  await expect(page.locator('#basin-info .warn'))
+    .toContainText('Did you draw the canyon bottom to top?', { timeout: 15000 });
+  await expect(page.locator('#basin-info .warn button')).toHaveText('Use the other end');
+});
+
+// A correctly traced canyon starts at the drainage divide, so its top vertex can read just
+// outside the basin. That is metres of slop, not a reversal, and must stay silent — otherwise
+// a safety warning cries wolf on correct input. Driven through useRoute rather than map
+// clicks: one pixel is ~244 m at zoom 9, so a 55 m offset is not expressible as a tap.
+test('a vertex a few metres outside the divide is not a reversal — no warning', async ({ page }) => {
+  await mockServices(page, { streamstats: 'exact' });
+  await page.goto('/');
+  // 37.3005 is ~55 m past the mock basin's 37.3 northern edge, inside the 100 m tolerance
+  await page.evaluate(() => useRoute([[-112.9, 37.3005], [-112.9, 37.2]], [-112.9, 37.2]));
+  await expect(page.locator('#status')).toHaveText(/^Done\./, { timeout: 15000 });
+  await expect(page.locator('#basin-info .warn')).toHaveCount(0);
+  await expect(page.locator('#basin-info')).not.toContainText('outside this drainage');
 });
 
 // ---- importing a canyon's KML / GPX ----

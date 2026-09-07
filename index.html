@@ -144,7 +144,7 @@
        dropped: it was prose (skipped) and the term itself read as jargon to a canyoneer. -->
   <div class="note" id="ways">Or, instead of tapping:</div>
   <div>
-    <button id="btn-draw" title="Trace the canyon from its top down to where you walk out — the drainage is taken at the bottom end">&#9999; Draw the canyon</button>
+    <button id="btn-draw" title="Trace the canyon top to bottom — not the hike out. The drainage is taken at your LAST point.">&#9999; Draw canyon &darr;</button>
     <button id="btn-import" title="Load a canyon's KML or GPX (ropewiki, CalTopo, Gaia) and pick which section is the descent">Import KML / GPX</button>
     <input type="file" id="file-track" accept=".kml,.gpx,.xml" hidden>
   </div>
@@ -879,9 +879,9 @@ let route = null;      // finished trace [[lon,lat],…] — kept only for the c
 let drawPts = null;    // non-null while the user is tracing
 function syncDraw() {
   const n = drawPts ? drawPts.length : 0;
-  $('btn-draw').textContent = !drawPts ? '✏ Draw the canyon' : n < 2 ? 'Cancel' : `Done — ${n} points`;
+  $('btn-draw').textContent = !drawPts ? '✏ Draw canyon ↓' : n < 2 ? 'Cancel' : `Done — ${n} points`;
   $('draw-note').textContent = drawPts
-    ? 'Tap along the canyon from the TOP down to where you walk out, then press Done. The drainage is taken at your LAST point.'
+    ? 'Tap down the canyon, TOP to bottom — not the hike out. Then press Done; the drainage is taken at your LAST point.'
     : '';
 }
 function drawRoute() {
@@ -903,6 +903,14 @@ function clearRoute() {
   setData('route', EMPTY);
   if ($('seg-pick').options.length) $('seg-pick').selectedIndex = 0;   // nothing drawn, nothing chosen
 }
+// Which end we poured at. Both ways in can pour at either end — a drawn trace pours at its
+// last vertex, an imported segment at whichever end 3DEP called lower — so identify it by
+// coordinate rather than assuming, and default to the last vertex when neither matches.
+function pourIdx(pts) {
+  const a = pts[0];
+  return (+a[1].toFixed(5) === cur.lat && +a[0].toFixed(5) === cur.lon) ? 0 : pts.length - 1;
+}
+const otherEnd = pts => pts[pourIdx(pts) === 0 ? pts.length - 1 : 0];
 // Both ways in end here: a traced line (pour point = its last vertex) and an imported
 // segment (pour point = its low end). Everything after this point is the tap pipeline.
 function useRoute(coords, pour) {
@@ -1397,17 +1405,51 @@ function renderBasinInfo() {
   // The traced route is a check on the answer, not an input to it: everything upstream of
   // the pour point is inside the basin by construction, so a vertex OUTSIDE means either
   // the snap found the wrong channel or the line was traced bottom-to-top — which put the
-  // pour point at the TOP and understates the drainage. The last vertex IS the pour point
-  // and sits ON the boundary, so one point out is normal and says nothing.
+  // pour point at the TOP and understates the drainage.
   if (route && route.length > 1) {
-    const out = route.filter(c => !turf.booleanPointInPolygon(c, basin)).length;
-    if (out > 1) {
+    // Two vertices are discounted, and both exclusions are load-bearing:
+    //   * the pour vertex, which sits ON the boundary and reads either way (measured at 6 m
+    //     from the edge on a real basin);
+    //   * anything only just outside — the TOP of a CORRECTLY traced canyon sits near the
+    //     drainage divide, so metres of slop there is not a reversal. A reversal puts the far
+    //     vertex a whole canyon length out (2238 m measured), so distance separates them.
+    // Counting raw "outside" against `out > 1` instead fired on nothing at all for a 2-point
+    // trace (user-flagged 2026-09-07): that gate existed only to absorb the pour vertex, and
+    // it left the SIMPLEST possible trace — two taps, top and bottom — with no check at all.
+    const edges = turf.polygonToLine(basin);
+    const farOutside = c => {
+      if (turf.booleanPointInPolygon(c, basin)) return false;
+      // a polygon with holes yields geometry pointToLineDistance refuses; understating the
+      // drainage is the dangerous direction, so an unmeasurable point warns rather than hides
+      try {
+        return Math.min(...(edges.features || [edges]).map(l =>
+          turf.pointToLineDistance(c, l, { units: 'meters' }))) > 100;
+      } catch { return true; }
+    };
+    const pour = pourIdx(route);
+    const out = route.filter((c, i) => i !== pour && farOutside(c)).length;
+    if (out) {
       const w = document.createElement('div');
-      const most = out > route.length / 2;
+      const most = out > (route.length - 1) / 2;
       w.className = most ? 'warn' : 'note';
       w.textContent = most
-        ? `⚠ ${out} of the ${route.length} points you traced are OUTSIDE this drainage. If you traced from the bottom up, the pour point is at the wrong end and the real drainage is bigger — trace top-to-bottom, or tap the bottom of the canyon directly.`
-        : `${out} of the ${route.length} points you traced fall outside this drainage — normal where the walk out leaves the canyon, but check on the map that the part you're descending is inside the shaded area.`;
+        ? `⚠ Your line runs outside this drainage. Did you draw the canyon bottom to top?`
+        : `Part of your line runs outside this drainage. Check on the map that the part you're descending is inside the shaded area.`;
+      // The polyline is fine; only the end we poured at is wrong — so offer the flip
+      // instead of making them re-tap the canyon (Draw calls clearRoute and discards it).
+      // Only on the loud branch: on the quiet one a few points out is the normal walk-out,
+      // and a flip there would break an answer that is already right.
+      if (most) {
+        const pts = route;   // capture — a later map tap clears `route`
+        const f = document.createElement('button');
+        f.textContent = 'Use the other end';
+        f.title = 'Keep the line, move the pour point to its far end';
+        // own line, always: inline it either sits flush against the text (the global button
+        // margin is 0 on the left) or wraps below it indented, depending on the message length
+        f.style.cssText = 'display:block;margin:6px 0 2px';
+        f.onclick = () => useRoute(pts, otherEnd(pts));
+        w.appendChild(f);
+      }
       info.appendChild(w);
     }
   }
