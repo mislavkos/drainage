@@ -52,6 +52,20 @@ test('forecast popup: a spot dot draws that ONE spot’s chart, plus the way out
   await expect(popup.locator('a')).toHaveAttribute('href', 'https://forecast.weather.gov/x');
 });
 
+// the config denies geolocation for every other test — the first-load auto-center
+// must never race them; this one test is the exception that proves the button works
+test.describe('locate button', () => {
+  test.use({ permissions: ['geolocation'], geolocation: { latitude: 37.5, longitude: -113.1 } });
+  test('goes to your position and marks it, without touching the pour point', async ({ page }) => {
+    await mockServices(page);
+    await page.goto('/' + HASH);
+    await doneStatus(page);
+    await page.locator('.maplibregl-ctrl-geolocate').click();
+    await expect(page.locator('.maplibregl-user-location-dot')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#status')).toHaveText(/^Done\./);   // no re-delineation
+  });
+});
+
 test('units toggle converts area and rain without a re-delineation', async ({ page }) => {
   const { requests } = await mockServices(page);
   await page.goto('/' + HASH);

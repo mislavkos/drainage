@@ -706,6 +706,11 @@ coords), NWS grid lookups (`grid2:`), zone geometries (`zone:`), StreamGrid laye
 map position, units/text-size/basemap/analytics choices. On quota, `lsSet` evicts the
 bulky caches (basins, zones, grid lookups) so small precious writes still land.
 
+Geolocation has two entry points and they are not the same thing: the automatic
+first-load center (only when there is no remembered view and no hash — a slow fix must
+never yank the map away from someone already panning) and MapLibre's `GeolocateControl`
+button, which is on demand and tracks. Neither touches the pour point.
+
 Reset to a true first run (deny the geolocation prompt too, or the map jumps to the
 tester's location instead of the Zion fallback):
 

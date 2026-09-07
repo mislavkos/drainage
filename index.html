@@ -381,6 +381,14 @@ if (!lastCenter && navigator.geolocation) {
     () => {}, { maximumAge: 600000 });
 }
 map.addControl(new maplibregl.NavigationControl());
+// "where am I" — the first-load auto-center above happens once and only when the app
+// has no remembered view; this is the button for every time after that. Centers only:
+// a tap sets the pour point, and having the button delineate would spend a StreamStats
+// call on someone who just wanted to look around.
+map.addControl(new maplibregl.GeolocateControl({
+  positionOptions: { enableHighAccuracy: true },   // a canyon mouth is not a city block
+  trackUserLocation: true
+}));
 // `originalEvent` is present only on user-driven moves — our own fitBounds never sets this
 let userPanned = false;
 map.on('movestart', e => { if (e.originalEvent) userPanned = true; });
