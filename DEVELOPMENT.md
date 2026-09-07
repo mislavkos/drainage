@@ -117,6 +117,17 @@ the app looks fine.
   back: the app was never public un-namespaced, bare keys at this origin belong to
   sibling projects (a leftover bare `pins` from another app would have been imported),
   and it silently defeated first-run testing by re-seeding cleared state.
+- **Liability notice lives in the app, not just `LICENSE`** (2026-09-07). MIT's `AS IS` and
+  no-liability clauses are addressed to "any person obtaining a copy" and sit in a file the
+  person tapping the hosted page never opens — the shield was in the one place the end user
+  never looks. Plain-English notice now sits where users actually are: a clause on the second
+  always-visible footer line ("an aid, not an authority: no warranty, and you use it at your
+  own risk") and a **Use at your own risk** block at the foot of "About this app". Two rules
+  — don't delete either as clutter, and don't let the footer clause slide into the About
+  expander, because notice behind a click is the defect it fixes. The README's embed
+  section carries the matching note for embedders, and "Where the data comes from" no longer
+  claims nothing here is computed by me — the descent pick, the basin max and the hourly
+  resample are ours.
 
 ## Three corrections that must not get re-broken
 
@@ -947,7 +958,7 @@ draws a *different* canyon.
 Phone app and stack choice; the 5-step DEM pipeline (breach-don't-fill, D8) — *the* fix
 for unmapped side canyons if that becomes the core use; offline tiles; fetched
 HRRR/NBM; snowmelt (SNOTEL/SNODAS); burn scars; HAND for inundation corridors;
-monetization; legal posture; academic/agency contacts. Risk formulas, Flash Flood
+monetization; academic/agency contacts. Risk formulas, Flash Flood
 Guidance, and the observed-QPE study were considered and **dropped entirely** — this
 tool presents sourced facts (drainage, forecast, alerts), not computed risk.
 

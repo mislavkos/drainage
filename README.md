@@ -45,7 +45,9 @@ The app is one self-contained page and sends no anti-framing headers, so it drop
 `allow="geolocation"` lets first-load "center on my location" work inside the frame;
 `clipboard-write` lets the copy-share-link button work. Everything else needs no changes.
 
-**If the embedding page gets real traffic, drop the OpenTopoMap and OSM basemaps** (or point them at a commercial tile provider). Both are volunteer-run and permit light use with attribution, not high-traffic production; the two USGS basemaps have no such limit. This is the one obligation embedding hands you.
+**If the embedding page gets real traffic, drop the OpenTopoMap and OSM basemaps** (or point them at a commercial tile provider). Both are volunteer-run and permit light use with attribution, not high-traffic production; the two USGS basemaps have no such limit. That is the licensing side of embedding.
+
+**Your readers will trust your page, not mine.** The app is an aid with no warranty — see "Use at your own risk" in its About panel — its drainage can read far larger than what actually reaches the point, and its descent pick is wrong about 8% of the time. If you embed it in a route description, keep your own safety language around it rather than letting the embed stand in for it.
 
 **Note:** when the app is framed, its usage counter records the origin of the embedding page — domain name only, not the full path. That is how embeds get counted at all. Set `referrerpolicy="no-referrer"` on the iframe if you would rather it didn't.
 
@@ -121,7 +123,7 @@ so browsing a wiki full of these embeds won't move the map in their own copy of 
 
 ### Where the data comes from
 
-Everything is a free, keyless US government service; nothing here is computed by me.
+The drainage shapes and the forecast numbers come from free, keyless US government services — those are not mine. What *is* mine: which section of an imported KML/GPX gets picked as the descent (the gradient heuristic above, wrong about 8% of the time), the basin-wide "worst spot" maximum across 2–4 sampled points, and the resampling of NWS's irregular forecast intervals onto an even hourly axis.
 
 - **USGS [StreamStats](https://streamstats.usgs.gov)** — the first choice for both snapping your tap to a channel and delineating the drainage above it, from a 10 m elevation model. It only snaps within a few tens of meters of a channel it knows. The app reaches it through the StreamStats web app's own backend rather than a published API — an undocumented internal that can change without notice. When it does, the app says so and falls back to NLDI, which is the coarser path described next.
 - **USGS [NLDI](https://waterdata.usgs.gov/blog/nldi-intro)** — the fallback for both steps, using an older and coarser stream map. Its drainage runs to the next downstream confluence rather than to your point, so it can be much larger than your actual basin. The app says so when this happens.
