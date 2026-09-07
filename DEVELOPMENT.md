@@ -71,6 +71,12 @@ the app looks fine.
   caveat. Input tolerances, keyboard tricks, URL parameters and other how-to detail go in
   the README instead — it has room and the right audience. When adding a feature, the
   default is **no About change**; adding one is the decision that needs justifying.
+  One bullet has cleared that bar since: **the basin's condition** (burn scar, snowmelt,
+  upstream release) is not modeled, added 2026-09-07 beside the rain-chart bullet it
+  qualifies. It is not a feature note — a burned canyon and an untouched one with the same
+  drainage and the same forecast render identically, so not knowing it is exactly the
+  "misread the map" case. Don't delete it as dilution. The same limitation is in the
+  README's "Read this before trusting the app's results" at more length.
 - **Pasted coordinates are read forgivingly, then the URL is rewritten** (2026-08-31).
   `parseHash` accepts spaces for the comma, degree signs, parens, a unicode minus, and
   falls through to `parseUtm` when the pair is out of lat/lon range (327065 is not a

@@ -6,6 +6,8 @@ Tap a point on a topo map and see the drainage area that feeds it — plus a 48-
 
 Built for one question: "I'm heading down this canyon — will it flash?"
 
+US only — every service behind it is a US government one — and it needs a connection; there is no offline mode. Before you trust a shaded area, read [what the results can and cannot tell you](#read-this-before-trusting-the-apps-results).
+
 ## Run locally
 
 You can run a clone locally on your device. Fully functional.
@@ -42,6 +44,8 @@ The app is one self-contained page and sends no anti-framing headers, so it drop
 
 `allow="geolocation"` lets first-load "center on my location" work inside the frame;
 `clipboard-write` lets the copy-share-link button work. Everything else needs no changes.
+
+**If the embedding page gets real traffic, drop the OpenTopoMap and OSM basemaps** (or point them at a commercial tile provider). Both are volunteer-run and permit light use with attribution, not high-traffic production; the two USGS basemaps have no such limit. This is the one obligation embedding hands you.
 
 **Note:** when the app is framed, its usage counter records the origin of the embedding page — domain name only, not the full path. That is how embeds get counted at all. Set `referrerpolicy="no-referrer"` on the iframe if you would rather it didn't.
 
@@ -110,7 +114,7 @@ so browsing a wiki full of these embeds won't move the map in their own copy of 
 - The rain chart covers the next 48 hours, hour by hour. Each hour shows the wettest forecast among several spots spread across the basin (NWS data), in the basin's own timezone. Those spots are the violet dots on the map — tap one (or the grey tap / orange pour-point marker) for that single spot's own chart in a popup, when what you want is the weather *there* rather than the basin-wide worst case.
 - Active [NWS](https://www.weather.gov/documentation/services-web-api) alerts are checked against the basin's actual shape — including zone-based alerts that carry no geometry of their own (most Flood Watches).
 - Share links (`#lat,lon,name`) recompute the same drainage on the recipient's device. Coordinates are read forgivingly, in the URL and in the paste box alike — extra spaces, a missing comma, a slash for the comma, degree signs, parentheses. Degrees-minutes-seconds works (`37°14'13.5"N 112°56'58.5"W`, or degrees and decimal minutes, hemisphere letter on either side) as long as the `°` is there — without it, `37 14 13.5 N …` is the same shape as a decimal pair and as a UTM pair, so it's refused rather than guessed. So does UTM (`327065mE 4122955mN`, or `12S 327065 4122955` with the zone; without one, the map's current view supplies it and the app says which it assumed). The URL is rewritten to plain decimal degrees.
-- Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) offers the pins at the top of the panel — **Add 31 pins** / **No thanks** — before anything reaches the recipient's saved list, skips any they already have, and delineates the first either way. That offer is in the page rather than a browser dialog on purpose: an installed PWA suppresses dialogs, and a suppressed one would drop the whole import without saying so.
+- Tick saved pins to share or delete several at once; shift-click a tickbox to take the whole range from the last one you ticked. A multi-pin link (`#pins:lat,lon,name;…`) offers the pins at the top of the panel — **Add 31 pins** / **No thanks** — before anything reaches the recipient's saved list, skips any they already have, and delineates the first either way. That offer is in the page rather than a browser dialog on purpose: an installed PWA suppresses dialogs, and a suppressed one would drop the whole import without saying so. Pins live in that one browser's local storage — there is no account and no sync, so clearing site data, browsing privately, or moving to a new phone loses them. A share link or a GeoJSON/KML export is the only way to carry them off the device.
 - Tick **Ω unpublished** for a canyon whose beta isn't public. The app prefixes an `Ω` to the spot's name — the glyph means nothing on its own, it's just a marker that reads as "don't spread this", borrowed from the convention of flagging deprecated code with it. Because it lives in the name rather than in a hidden setting, it travels with the spot everywhere: share links, export filenames, and the saved pins of whoever you send it to, so a name arriving with an `Ω` still says "unpublished" on the other end. Those pins group together at the bottom of your saved list, and any share link containing one asks you first, in the panel, before it's copied — deliberate sharing still works, the question is there to stop the accidental kind. (It's a line in the page rather than a browser dialog because an installed PWA suppresses dialogs, and a suppressed one wouldn't ask, it would just refuse to share.)
 - The arrow button under the zoom controls centers the map on you and keeps it there while you move — the usual map-app "where am I". It only moves the view; the pour point is still wherever you tapped.
 - Export the basin as GeoJSON or KML for GaiaGPS, CalTopo, or Google Earth.
@@ -119,7 +123,7 @@ so browsing a wiki full of these embeds won't move the map in their own copy of 
 
 Everything is a free, keyless US government service; nothing here is computed by me.
 
-- **USGS [StreamStats](https://streamstats.usgs.gov)** — the first choice for both snapping your tap to a channel and delineating the drainage above it, from a 10 m elevation model. It only snaps within a few tens of meters of a channel it knows.
+- **USGS [StreamStats](https://streamstats.usgs.gov)** — the first choice for both snapping your tap to a channel and delineating the drainage above it, from a 10 m elevation model. It only snaps within a few tens of meters of a channel it knows. The app reaches it through the StreamStats web app's own backend rather than a published API — an undocumented internal that can change without notice. When it does, the app says so and falls back to NLDI, which is the coarser path described next.
 - **USGS [NLDI](https://waterdata.usgs.gov/blog/nldi-intro)** — the fallback for both steps, using an older and coarser stream map. Its drainage runs to the next downstream confluence rather than to your point, so it can be much larger than your actual basin. The app says so when this happens.
 - **[NWS](https://www.weather.gov/documentation/services-web-api)** (`api.weather.gov`, part of NOAA) — the hourly rain forecast and the active alerts.
 
@@ -141,6 +145,7 @@ Everything is a free, keyless US government service; nothing here is computed by
 
 - Drainage shapes come from a 10 m elevation model and ~1:24,000 stream maps where StreamStats can answer, and from ~1:100,000 maps where it falls back to NLDI. Small side canyons often aren't mapped separately, and snapping only reaches a few tens of meters — tap directly on a stream line, not near it. The app warns when your tap lands outside the returned basin or far from a mapped stream.
 - Basins err large, which is the safe direction — but on the NLDI fallback path they can err *very* large. That basin runs to the next downstream confluence rather than to your point, which measured 73× the true area at one small canyon I tested. The app warns when this happens; take the number as an upper bound, not an estimate.
+- **The basin's condition is not part of the answer.** A burn scar floods at a fraction of the rain that an unburned basin shrugs off, and snowmelt and upstream reservoir releases put water in a channel that no rain forecast predicts. None of that is modeled here — a recently burned canyon and an untouched one with the same drainage and the same forecast read identically.
 - **"No active alerts" does not mean safe.** Antelope Canyon 1997 had no warning. This tool shows sourced facts — drainage, forecast, alerts. The judgment is yours.
 
 ## License
