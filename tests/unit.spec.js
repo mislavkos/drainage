@@ -158,10 +158,15 @@ test('countEvent: only the fixed vocabulary ever leaves, and never a coordinate'
     return out;
   });
   expect(sent).toHaveLength(10);
-  expect(sent[0]).toMatch(/^https:\/\/drainage\.goatcounter\.com\/count\?p=delineate-UT&e=true&rnd=/);
-  // strip the random cache-buster first: it is random, and a 37 landing in it used to fail
-  // this ~1 run in 8 — the promise under test is about the event NAME, not that noise
-  for (const u of sent) expect(u.replace(/&rnd=.*/, '')).not.toMatch(/37|112/);
+  expect(sent[0]).toMatch(/^https:\/\/drainage\.goatcounter\.com\/count\?p=delineate-UT&e=true&s=\d+,\d+,1&rnd=/);
+  // the panel promises a screen SIZE, and we send less than that — rounded to the nearest
+  // 100 px, scale pinned at 1. Pin it, or a "modernize" back to raw dimensions goes unseen.
+  const [w, h, scale] = sent[0].match(/&s=(\d+),(\d+),(\d+)&/).slice(1).map(Number);
+  expect([w % 100, h % 100, scale]).toEqual([0, 0, 1]);
+  // strip the cache-buster AND the size first: both are numeric noise that can hold a 37 or
+  // 112 by chance (the rnd used to fail this ~1 run in 8), and the promise under test here
+  // is about the event NAME
+  for (const u of sent) expect(u.replace(/&s=[\d,]+/, '').replace(/&rnd=.*/, '')).not.toMatch(/37|112/);
 });
 
 test('countEvent: the analytics-off choice sends nothing', async ({ page }) => {

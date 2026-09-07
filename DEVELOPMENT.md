@@ -678,12 +678,8 @@ happened and nothing about the mode, and `open` is a lower bound with an unknown
 permanently zero under `open=0`, and most readers never click it. `locked` carries
 strictly less than `delineate-XX` already does: no state, no coordinate.
 
-- **We do NOT load GoatCounter's `count.js`, on purpose.** It is a CDN script (this app
-  vendors everything) and it adds fields of its own — observed sending
-  `q=<location.search>` and the screen size. `countEvent()` builds the documented
-  tracking pixel itself (`/count?p=&e=true&rnd=`) with `referrerPolicy = 'no-referrer'`,
-  so the payload is provably exactly what the words say. **If anyone "modernizes" this
-  back to count.js, the privacy note becomes false.**
+- **We do NOT load GoatCounter's `count.js`, on purpose.** It is a CDN script (this app vendors everything) and it adds fields of its own, including `q=<location.search>` — this app has a `?locked` query string and no reason to ship it. `countEvent()` builds the documented tracking pixel itself (`/count?p=&e=true&s=&rnd=`) with `referrerPolicy = 'no-referrer'`, so the payload is provably exactly what the words say. **If anyone "modernizes" this back to count.js, the privacy note becomes false.**
+- **Screen size IS sent (`&s=`), and the note here that used to call it a privacy concern was wrong** (corrected 2026-09-07, after the empty Sizes report prompted the question). GoatCounter keeps no IP, no full User-Agent and no tracker id, and its attributes are not joinable — there is no identifier for a viewport to sharpen, which is the only thing that makes a viewport a fingerprinting risk. The User-Agent it cannot help receiving already discloses iOS-vs-macOS, most of what a size bucket says. Sent **rounded to the nearest 100 px, scale pinned at 1**, which is less than the panel promises ("your screen size") — the safe direction. Rounding, not our own bucketing: GoatCounter derives four coarse buckets server-side from the width, and hard-coding those boundaries here would report the wrong bucket, silently, whenever they moved. 320 px (→300) still separates from 375–414 (→400), which is the decision the field exists to answer. Pinned by the `countEvent` test.
 - A referrer **origin** is sent (`&r=`) so embeds can be counted — inside an iframe
   `document.referrer` is the parent page. Origin only, never the path: a linking URL
   can itself be private. Own-origin and unparseable referrers send nothing.

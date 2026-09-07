@@ -231,9 +231,9 @@
       <strong>Privacy</strong>
       <ul>
         <li>Your tap coordinates go to USGS, and points inside the drainage go to NWS. That is how the drainage and the forecast get calculated. <b>None of it comes to me.</b></li>
-        <li>I don't collect anything personal &ndash; not your location, and not which canyon you're looking at. The exceptions: which US state a drainage is in, and the domain name of the page that linked to or embedded the app.</li>
+        <li>I don't collect anything personal &ndash; not your location, and not which canyon you're looking at. The exceptions: which US state a drainage is in, the domain name of the page that linked to or embedded the app, and your screen size.</li>
         <li>Share links put the coordinates after a <code>#</code>, which browsers never send to any server.</li>
-        <li>Basic anonymized usage counting is on by default and can be switched off below. It records that a lookup, export, share, pin, embed load, or click through from an embed happened, when, the domain name of the referring page (never its path), and, for a lookup only, which US state. Nothing else, and never a coordinate.</li>
+        <li>Basic anonymized usage counting is on by default and can be switched off below. It records that a lookup, export, share, pin, embed load, or click through from an embed happened, when, the domain name of the referring page (never its path), your screen size, and, for a lookup only, which US state. Nothing else, and never a coordinate.</li>
         <li>Counting uses <a href="https://www.goatcounter.com/help/privacy" target="_blank" rel="noopener">GoatCounter</a>, which is cookieless. As with any web request it receives an IP address and browser string; it hashes both with a salt that rotates every 8 hours, keeps them in memory only, and never shows them to me.</li>
         <li>Feedback is sent only using <a href="https://web3forms.com/privacy" target="_blank" rel="noopener">Web3Forms</a> when you type a note and press Send. It carries your rating, your text, and the drainage you were looking at (only if you leave that box ticked); the exact values are shown to you before you send.</li>
       </ul>
@@ -2042,10 +2042,16 @@ const countingOn = () => !dntOn && lsGet('analytics') !== false;
 function countEvent(name) {
   if (!countingOn() || !EVENT_OK.test(name)) return;
   // Deliberately NOT goatcounter's count.js. That script loads from a CDN (this app vendors
-  // everything for a reason) and adds fields of its own — it was observed sending
-  // q=<location.search> and the screen size, neither of which the panel's promise mentions.
-  // Their documented tracking pixel lets us build the whole request, so the wire matches the
-  // words exactly: one label, and nothing else.
+  // everything for a reason) and adds fields of its own, including q=<location.search> —
+  // this app has a ?locked query string and no reason to ship it. Their documented tracking
+  // pixel lets us build the whole request instead, so the wire matches the words exactly.
+  //
+  // Screen size DOES ride along (2026-09-07), and the original note here rejecting it as a
+  // privacy concern was wrong: GoatCounter keeps no IP, no full User-Agent and no tracker
+  // id, and its attributes are not joinable, so there is no identifier for a viewport to
+  // sharpen. The User-Agent it cannot help receiving already discloses iOS-vs-macOS, which
+  // is most of what a size bucket says. What it buys: whether to design for phones or
+  // laptops, which was being guessed at.
   //
   // WHAT WE CANNOT STRIP: every HTTP request carries the caller's IP address and
   // User-Agent. There is no browser API to suppress them — not fetch, not an image, not
@@ -2059,12 +2065,21 @@ function countEvent(name) {
   //
   // This is why the panel does not claim "nothing leaves your device". It claims we do not
   // collect anything personal, which is a different and true statement. Keep it that way.
+  // Rounded to the nearest 100 px. GoatCounter reports size as four coarse buckets (phone /
+  // tablet / monitor / bigger), derived server-side from the width — the bucket is all we
+  // want. Rounding keeps THEIR boundaries authoritative: bucketing it here instead would
+  // hard-code limits we do not control and would report the wrong bucket, silently, if they
+  // ever moved. It still separates a 320 px phone (→300) from a 375-414 one (→400), which
+  // is the question it exists to answer. Scale pinned at 1 — the width bucket does not need
+  // the pixel ratio, so sending it would be entropy for nothing.
+  const r100 = n => Math.round(n / 100) * 100;
+  const size = `${r100(screen.width)},${r100(screen.height)},1`;
   const img = new Image();
   // no-referrer stops the BROWSER attaching a Referer header (which would be the full URL,
   // fragment aside). What we do send is the r= below, built by us and trimmed to an origin.
   img.referrerPolicy = 'no-referrer';
   const ref = referrerOrigin();
-  img.src = `https://${GC_SITE}.goatcounter.com/count?p=${encodeURIComponent(name)}&e=true` + (ref ? `&r=${encodeURIComponent(ref)}` : '') + `&rnd=${Math.random().toString(36).slice(2)}`;
+  img.src = `https://${GC_SITE}.goatcounter.com/count?p=${encodeURIComponent(name)}&e=true&s=${size}` + (ref ? `&r=${encodeURIComponent(ref)}` : '') + `&rnd=${Math.random().toString(36).slice(2)}`;
 }
 // Keeps the checkbox and its status line honest about the actual state — a browser-level
 // do-not-track overrides the stored choice, so the box must be able to read "off, disabled"
